@@ -316,6 +316,7 @@ class Manifest:
             sgx.setdefault('enclave_size', DEFAULT_ENCLAVE_SIZE_NO_EDMM)
 
         sgx.setdefault('use_exinfo', False)
+        sgx.setdefault('runtime', False)
 
         sgx_cpu_features = sgx.setdefault('cpu_features', {})
         sgx_cpu_features.setdefault('avx', "unspecified")

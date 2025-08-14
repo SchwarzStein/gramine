@@ -95,6 +95,7 @@ def collect_cpu_feature_bits(manifest_cpu_features, options_dict, val, mask, sec
 def get_enclave_attributes(manifest_sgx):
     flags_dict = {
         'debug': offs.SGX_FLAGS_DEBUG,
+        'runtime': offs.SGX_FLAGS_RUNTIME,
     }
     flags = collect_bits(manifest_sgx, flags_dict)
     if ARCHITECTURE == 'amd64':

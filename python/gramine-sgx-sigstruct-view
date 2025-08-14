@@ -36,6 +36,7 @@ def main(sigfile, verbose, output_format, output):
         'misc_mask': hex(sig['misc_mask']),
         'date': f"{sig['date_year']:04}-{sig['date_month']:02}-{sig['date_day']:02}",
         'debug_enclave': bool(sig['attribute_flags'] & 0b10),
+        'runtime_enabled': bool(sig['attribute_flags'] & 0x800),
     }
 
     if not verbose:

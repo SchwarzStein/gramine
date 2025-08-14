@@ -81,6 +81,7 @@ GramineManifestSchema = Schema({
             Any('mpx', 'pkru'): Any('disabled', 'required'),
         },
         'debug': bool,
+        'runtime': bool,
         'edmm_enable': bool,
         'enable_stats': bool,
         'enclave_size': _size,
