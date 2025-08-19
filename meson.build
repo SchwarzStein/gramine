@@ -41,6 +41,7 @@ endif
 
 direct = get_option('direct') == 'enabled'
 sgx = get_option('sgx') == 'enabled'
+runtime = get_option('runtime') == 'enabled'
 skeleton = get_option('skeleton') == 'enabled'
 
 ubsan = get_option('ubsan') == 'enabled'
@@ -110,6 +111,10 @@ if sgx
         add_project_arguments('-DSGX_VTUNE_PROFILE', language: 'c')
         vtune_sdk_path = get_option('vtune_sdk_path')
     endif
+endif
+
+if runtime
+    add_project_arguments('-DRUNTIME', language: 'c')
 endif
 
 gen_symbol_map_cmd = [

@@ -316,9 +316,16 @@ static int receive_memory_on_stream(PAL_HANDLE handle, struct checkpoint_hdr* hd
             if (entry->dummy) {
                 /* Allocate temporary VMA - it will be overwritten when actual VMA is restored from
                  * the checkpointed data. */
+#ifndef RUNTIME
                 ret = bkeep_mmap_fixed(addr, size, PAL_PROT_TO_LINUX(prot),
                                        MAP_FIXED_NOREPLACE | MAP_ANONYMOUS | MAP_PRIVATE,
                                        /*file=*/NULL, /*offset=*/0, "tmp vma");
+#else
+                // vma is allocated before, in cp does not need to check again
+                ret = bkeep_mmap_fixed(addr, size, PAL_PROT_TO_LINUX(prot),
+                                       MAP_FIXED_NOREPLACE | MAP_ANONYMOUS | MAP_PRIVATE,
+                                       /*file=*/NULL, /*offset=*/0, "tmp vma", /*user_check=*/false);
+#endif
                 if (ret < 0) {
                     log_error("failed to bookkeep temporary VMA for memory at %p-%p", addr,
                               (char*)addr + size);
@@ -432,8 +439,13 @@ static void* cp_alloc(void* addr, size_t size) {
     if (addr) {
         log_debug("extending checkpoint store: %p-%p (size = %lu)", addr, addr + size, size);
 
+#ifndef RUNTIME
         if (bkeep_mmap_fixed(addr, size, PROT_READ | PROT_WRITE,
                              CP_MMAP_FLAGS | MAP_FIXED_NOREPLACE, NULL, 0, "cpstore") < 0)
+#else
+        if (bkeep_mmap_fixed(addr, size, PROT_READ | PROT_WRITE,
+                             CP_MMAP_FLAGS | MAP_FIXED_NOREPLACE, NULL, 0, "cpstore", false) < 0)
+#endif
             return NULL;
     } else {
         /* FIXME: It is unclear if the below strategy helps */
@@ -447,8 +459,13 @@ static void* cp_alloc(void* addr, size_t size) {
 
         log_debug("allocating checkpoint store (size = %ld, reserve = %ld)", size, reserve_size);
 
+#ifndef RUNTIME
         int ret = bkeep_mmap_any(size + reserve_size, PROT_READ | PROT_WRITE, CP_MMAP_FLAGS, NULL,
                                  0, "cpstore", &addr);
+#else
+        int ret = bkeep_mmap_any(size + reserve_size, PROT_READ | PROT_WRITE, CP_MMAP_FLAGS, NULL,
+                                 0, "cpstore", &addr, false);
+#endif
         if (ret < 0) {
             return NULL;
         }
@@ -678,8 +695,13 @@ int receive_checkpoint_and_restore(struct checkpoint_hdr* hdr) {
     /* first try allocating at address used by parent process */
     if (g_pal_public_state->memory_address_start <= mapaddr &&
             mapaddr + mapsize <= g_pal_public_state->memory_address_end) {
+#ifndef RUNTIME
         ret = bkeep_mmap_fixed(mapaddr, mapsize, PROT_READ | PROT_WRITE,
                                CP_MMAP_FLAGS | MAP_FIXED_NOREPLACE, NULL, 0, "cpstore");
+#else
+        ret = bkeep_mmap_fixed(mapaddr, mapsize, PROT_READ | PROT_WRITE,
+                               CP_MMAP_FLAGS | MAP_FIXED_NOREPLACE, NULL, 0, "cpstore", false);
+#endif
         if (ret < 0) {
             /* the address used by parent overlaps with this child's memory regions */
             base = NULL;
@@ -691,8 +713,13 @@ int receive_checkpoint_and_restore(struct checkpoint_hdr* hdr) {
 
     if (!base) {
         /* address used by parent process is occupied; allocate checkpoint anywhere */
+#ifndef RUNTIME
         ret = bkeep_mmap_any(ALLOC_ALIGN_UP(hdr->size), PROT_READ | PROT_WRITE, CP_MMAP_FLAGS, NULL,
                              0, "cpstore", &base);
+#else
+        ret = bkeep_mmap_any(ALLOC_ALIGN_UP(hdr->size), PROT_READ | PROT_WRITE, CP_MMAP_FLAGS, NULL,
+                             0, "cpstore", &base, false);
+#endif
         if (ret < 0) {
             return ret;
         }

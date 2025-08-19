@@ -353,8 +353,13 @@ static void* _vma_malloc(size_t size) {
     void* addr = NULL;
     size = ALLOC_ALIGN_UP(size);
 
+#ifndef RUNTIME
     if (bkeep_mmap_any(size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | VMA_INTERNAL,
                        NULL, 0, "vma", &addr) < 0) {
+#else
+    if (bkeep_mmap_any(size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | VMA_INTERNAL,
+                       NULL, 0, "vma", &addr, false) < 0) {
+#endif
         return NULL;
     }
 
@@ -672,12 +677,21 @@ int init_vma(void) {
         return ret;
     }
 
+#ifndef RUNTIME
     g_aslr_addr_top = g_pal_public_state->memory_address_end;
+#else
+    g_aslr_addr_top = g_pal_public_state->memory_program_end;
+#endif
 
     if (!g_pal_public_state->disable_aslr) {
         /* Inspired by: https://elixir.bootlin.com/linux/v5.6.3/source/arch/x86/mm/mmap.c#L80 */
+#ifndef RUNTIME
         size_t gap_max_size = (g_pal_public_state->memory_address_end
                                - g_pal_public_state->memory_address_start) / 6 * 5;
+#else
+        size_t gap_max_size = (g_pal_public_state->memory_program_end
+                               - g_pal_public_state->memory_address_start) / 6 * 5;
+#endif
         /* We do address space randomization only if we have at least ASLR_BITS to randomize. */
         if (gap_max_size / ALLOC_ALIGNMENT >= (1ul << ASLR_BITS)) {
             size_t gap = 0;
@@ -829,13 +843,25 @@ static bool is_file_prot_matching(struct libos_handle* file_hdl, int prot) {
     return !(prot & PROT_WRITE) || (file_hdl->flags & O_RDWR);
 }
 
+#ifndef RUNTIME
 int bkeep_mmap_fixed(void* addr, size_t length, int prot, int flags, struct libos_handle* file,
                      uint64_t offset, const char* comment) {
+#else
+int bkeep_mmap_fixed(void* addr, size_t length, int prot, int flags, struct libos_handle* file,
+                     uint64_t offset, const char* comment, bool user_check) {
+#endif
     assert(flags & (MAP_FIXED | MAP_FIXED_NOREPLACE));
 
     if (!length || !IS_ALLOC_ALIGNED(length) || !IS_ALLOC_ALIGNED_PTR(addr)) {
         return -EINVAL;
     }
+#ifdef RUNTIME
+    if (user_check && 
+            (addr > g_pal_public_state->memory_program_end
+            || addr + length > g_pal_public_state->memory_program_end)) {
+        return -EINVAL;
+    }
+#endif
 
     struct libos_vma* new_vma = alloc_vma();
     if (!new_vma) {
@@ -1166,12 +1192,34 @@ out:
     return ret;
 }
 
+#ifndef RUNTIME
 int bkeep_mmap_any(size_t length, int prot, int flags, struct libos_handle* file, uint64_t offset,
                    const char* comment, void** ret_val_ptr) {
     return bkeep_mmap_any_in_range(g_pal_public_state->memory_address_start,
                                    g_pal_public_state->memory_address_end,
                                    length, prot, flags, file, offset, comment, ret_val_ptr);
 }
+#else
+int bkeep_mmap_any(size_t length, int prot, int flags, struct libos_handle* file, uint64_t offset,
+                   const char* comment, void** ret_val_ptr, bool user) {
+    if (user) {
+        return bkeep_mmap_any_in_range(g_pal_public_state->memory_address_start,
+                                   g_pal_public_state->memory_program_end,
+                                   length, prot, flags, file, offset, comment, ret_val_ptr);
+    } else {
+        // when runtime is not enabled, memory_program_end == memory_address_end
+        if (g_pal_public_state->memory_program_end < g_pal_public_state->memory_address_end)
+            return bkeep_mmap_any_in_range(g_pal_public_state->memory_program_end,
+                                    g_pal_public_state->memory_address_end,
+                                    length, prot, flags, file, offset, comment, ret_val_ptr);
+        else
+            return bkeep_mmap_any_in_range(g_pal_public_state->memory_address_start,
+                                    g_pal_public_state->memory_address_end,
+                                    length, prot, flags, file, offset, comment, ret_val_ptr);
+    }
+}
+#endif
+    
 
 int bkeep_mmap_any_aslr(size_t length, int prot, int flags, struct libos_handle* file,
                         uint64_t offset, const char* comment, void** ret_val_ptr) {
@@ -1182,7 +1230,12 @@ int bkeep_mmap_any_aslr(size_t length, int prot, int flags, struct libos_handle*
         return ret;
     }
 
+#ifndef RUNTIME
     return bkeep_mmap_any(length, prot, flags, file, offset, comment, ret_val_ptr);
+#else
+    return bkeep_mmap_any(length, prot, flags, file, offset, comment, ret_val_ptr, true);
+#endif
+
 }
 
 int bkeep_vma_update_valid_length(void* begin_addr, size_t valid_length) {
@@ -1209,9 +1262,15 @@ out:
 
 static int pal_mem_bkeep_alloc(size_t size, uintptr_t* out_addr) {
     void* addr;
+#ifndef RUNTIME
     int ret = bkeep_mmap_any(size, PROT_READ | PROT_WRITE,
                              MAP_PRIVATE | MAP_ANONYMOUS | VMA_INTERNAL, /*file=*/NULL,
                              /*offset=*/0, "pal internal memory", &addr);
+#else
+    int ret = bkeep_mmap_any(size, PROT_READ | PROT_WRITE,
+                             MAP_PRIVATE | MAP_ANONYMOUS | VMA_INTERNAL, /*file=*/NULL,
+                             /*offset=*/0, "pal internal memory", &addr, false);
+#endif
     if (ret < 0) {
         return ret;
     }
@@ -1947,8 +2006,13 @@ BEGIN_RS_FUNC(vma) {
     bool remap_from_file = (bool)GET_CP_ENTRY(ADDR);
     CP_REBASE(vma->file);
 
+#ifndef RUNTIME
     int ret = bkeep_mmap_fixed(vma->addr, vma->length, vma->prot, vma->flags | MAP_FIXED, vma->file,
                                vma->file_offset, vma->comment);
+#else
+    int ret = bkeep_mmap_fixed(vma->addr, vma->length, vma->prot, vma->flags | MAP_FIXED, vma->file,
+                               vma->file_offset, vma->comment, false);
+#endif
     if (ret < 0)
         return ret;
 

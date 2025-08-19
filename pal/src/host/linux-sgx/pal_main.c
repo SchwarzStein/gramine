@@ -490,6 +490,14 @@ noreturn void pal_linux_main(void* uptr_libpal_uri, size_t libpal_uri_len, void*
      * set below. */
     g_pal_public_state.memory_address_start = g_pal_linuxsgx_state.heap_min;
     g_pal_public_state.memory_address_end = g_pal_linuxsgx_state.heap_max;
+#ifdef RUNTIME
+    if (GET_ENCLAVE_TCB(runtime_size)) {
+        g_pal_public_state.memory_program_end = (void *)GET_ENCLAVE_TCB(enclave_size);
+    } else {
+        g_pal_public_state.memory_program_end = GET_ENCLAVE_TCB(heap_max);
+    }
+    
+#endif
 
     if (ranges_overlap((uintptr_t)g_enclave_base, (uintptr_t)g_enclave_top,
                        SHARED_ADDR_MIN, SHARED_ADDR_MIN + SHARED_MEM_SIZE)
@@ -558,7 +566,11 @@ noreturn void pal_linux_main(void* uptr_libpal_uri, size_t libpal_uri_len, void*
     /* initialize the enclave lazy commit page tracker as soon as we initialized the slab memory
      * allocator */
     if (edmm_enabled) {
+#ifndef RUNTIME
         size_t enclave_pages = UDIV_ROUND_UP(GET_ENCLAVE_TCB(enclave_size), PAGE_SIZE);
+#else
+        size_t enclave_pages = UDIV_ROUND_UP(GET_ENCLAVE_TCB(enclave_size) + GET_ENCLAVE_TCB(runtime_size), PAGE_SIZE);
+#endif
         init_enclave_lazy_commit_page_tracker((uintptr_t)g_enclave_base, enclave_pages);
     }
 

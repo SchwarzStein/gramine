@@ -15,6 +15,7 @@ fs.mounts = [
 
 sgx.debug = true
 sgx.edmm_enable = {{ 'true' if env.get('EDMM', '0') == '1' else 'false' }}
+sgx.runtime_enable = true
 
 sgx.trusted_files = [
   "file:helloworld",

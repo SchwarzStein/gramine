@@ -82,6 +82,8 @@ GramineManifestSchema = Schema({
         },
         'debug': bool,
         'runtime': bool,
+        'runtime_enable': bool,
+        'runtime_size': _size,
         'edmm_enable': bool,
         'enable_stats': bool,
         'enclave_size': _size,

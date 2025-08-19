@@ -24,6 +24,7 @@ from . import _env
 from .manifest_check import GramineManifestSchema
 
 DEFAULT_ENCLAVE_SIZE_NO_EDMM = '256M'
+DEFAULT_ENCLAVE_SIZE_NO_EDMM_RUNTIME = '128M'
 DEFAULT_ENCLAVE_SIZE_WITH_EDMM = '1024G'  # 1TB; note that DebugInfo is at 1TB and ASan at 1.5TB
 DEFAULT_THREAD_NUM = 4
 
@@ -309,11 +310,17 @@ class Manifest:
         sgx.setdefault('debug', False)
         sgx.setdefault('enable_stats', False)
         sgx.setdefault('edmm_enable', False)
+        sgx.setdefault('runtime_enable', False)
 
         if sgx['edmm_enable']:
             sgx.setdefault('enclave_size', DEFAULT_ENCLAVE_SIZE_WITH_EDMM)
+        elif sgx['runtime_enable']:
+            sgx.setdefault('enclave_size', DEFAULT_ENCLAVE_SIZE_NO_EDMM_RUNTIME)
         else:
             sgx.setdefault('enclave_size', DEFAULT_ENCLAVE_SIZE_NO_EDMM)
+
+        if sgx['runtime_enable']:
+            sgx.setdefault('runtime_size', DEFAULT_ENCLAVE_SIZE_NO_EDMM_RUNTIME)
 
         sgx.setdefault('use_exinfo', False)
         sgx.setdefault('runtime', False)

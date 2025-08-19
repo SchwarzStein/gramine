@@ -53,6 +53,11 @@ struct pal_enclave {
     bool profile_with_stack;
     int profile_frequency;
 #endif
+
+#ifdef RUNTIME
+    bool runtime_enable;
+    unsigned long runtime_size;
+#endif
 };
 
 extern struct pal_enclave g_pal_enclave;

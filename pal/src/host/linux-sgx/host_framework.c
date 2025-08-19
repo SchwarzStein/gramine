@@ -108,6 +108,12 @@ int create_enclave(sgx_arch_secs_t* secs, sgx_sigstruct_t* sig) {
     assert(secs->size && IS_POWER_OF_2(secs->size));
     assert(IS_ALIGNED(secs->base, secs->size));
 
+#ifdef RUNTIME
+    if (sig->attributes.flags & SGX_FLAGS_RUNTIME) {
+        assert(secs->runtime_size && IS_POWER_OF_2(secs->runtime_size));
+        assert(IS_ALIGNED(secs->runtime_base, secs->runtime_size));
+    }
+#endif
     secs->ssa_frame_size = SSA_FRAME_SIZE / g_page_size; /* SECS expects SSA frame size in pages */
     secs->misc_select = sig->misc_select;
     secs->attributes.flags = sig->attributes.flags;
@@ -121,7 +127,12 @@ int create_enclave(sgx_arch_secs_t* secs, sgx_sigstruct_t* sig) {
      * EINIT in https://software.intel.com/sites/default/files/managed/48/88/329298-002.pdf). */
 
     uint64_t request_mmap_addr = secs->base;
+
+#ifndef RUNTIME
     uint64_t request_mmap_size = secs->size;
+#else
+    uint64_t request_mmap_size = secs->size + secs->runtime_size;
+#endif
 
     /* newer DCAP/in-kernel SGX drivers allow starting enclave address space with non-zero;
      * the below trick to start from MMAP_MIN_ADDR is to avoid vm.mmap_min_addr==0 issue */
@@ -171,6 +182,12 @@ int create_enclave(sgx_arch_secs_t* secs, sgx_sigstruct_t* sig) {
     log_debug("    attr.xfrm:      0x%016lx", secs->attributes.xfrm);
     log_debug("    ssa_frame_size: %d",       secs->ssa_frame_size);
 
+#ifdef RUNTIME
+    if (sig->attributes.flags & SGX_FLAGS_RUNTIME) {
+        log_debug("    runtime_base:   0x%016lx", secs->runtime_base);
+        log_debug("    runtime_size:   0x%016lx", secs->runtime_size);
+    }
+#endif
     /* Linux v5.16 introduced support for Intel AMX feature. Any process must opt-in for AMX
      * by issuing an AMX-permission request. More technically, together with AMX, Intel introduced
      * Extended Feature Disable (XFD) which allows Linux to disable certain features from the
@@ -229,12 +246,21 @@ int add_pages_to_enclave(sgx_arch_secs_t* secs, void* addr, void* user_addr, uns
             secinfo.flags = SGX_PAGE_TYPE_REG << SGX_SECINFO_FLAGS_TYPE_SHIFT
                             | PAL_TO_SGX_PROT(prot);
             break;
+#ifdef RUNTIME
+        case SGX_PAGE_TYPE_HANDLER:
+            secinfo.flags = SGX_PAGE_TYPE_HANDLER << SGX_SECINFO_FLAGS_TYPE_SHIFT;
+            break;
+#endif
         default:
             return -EINVAL;
     }
 
     char p[4] = "---";
     const char* t = (type == SGX_PAGE_TYPE_TCS) ? "TCS" : "REG";
+#ifdef RUNTIME
+    if (type == SGX_PAGE_TYPE_HANDLER)
+        t = "HANDLER";
+#endif
     const char* m = skip_eextend ? "" : " measured";
 
     if (type == SGX_PAGE_TYPE_REG) {
@@ -292,6 +318,9 @@ int add_pages_to_enclave(sgx_arch_secs_t* secs, void* addr, void* user_addr, uns
      * contrived logic won't be needed when the SGX driver stabilizes its ioctl interface.
      * (https://git.kernel.org/pub/scm/linux/kernel/git/jarkko/linux-sgx.git/tag/?h=v39) */
     while (param.length > 0) {
+        struct timespec ts1, ts2;
+        long sec_diff, nsec_diff;
+        DO_SYSCALL(clock_gettime, CLOCK_MONOTONIC_RAW, &ts1);
         ret = DO_SYSCALL(ioctl, g_isgx_device, SGX_IOC_ENCLAVE_ADD_PAGES, &param);
         if (ret < 0) {
             if (ret == -EINTR)
@@ -299,14 +328,17 @@ int add_pages_to_enclave(sgx_arch_secs_t* secs, void* addr, void* user_addr, uns
             log_error("Enclave add-pages IOCTL failed: %s", unix_strerror(ret));
             return ret;
         }
-
+        DO_SYSCALL(clock_gettime, CLOCK_MONOTONIC_RAW, &ts2);
         uint64_t added_size = ret > 0 ? (uint64_t)ret : param.count;
         if (!added_size) {
             log_error("Intel SGX driver did not perform EADD. This may indicate a buggy "
                       "driver, please update to the most recent version.");
             return -EPERM;
         }
+        sec_diff = ts2.tv_sec - ts1.tv_sec;
+        nsec_diff = ts2.tv_nsec - ts1.tv_nsec;
 
+        log_debug("SGX_IOC_ENCLAVE_ADD_PAGES ioctl call took %ld seconds %ld nanoseconds", sec_diff,nsec_diff );
         param.offset += added_size;
         if (param.src != (uint64_t)g_zero_pages)
             param.src += added_size;
@@ -443,7 +475,11 @@ int edmm_supported_by_driver(bool* out_supported) {
 }
 
 int init_enclave(sgx_arch_secs_t* secs, sgx_sigstruct_t* sigstruct) {
+#ifndef RUNTIME
     unsigned long enclave_valid_addr = secs->base + secs->size - g_page_size;
+#else
+    unsigned long enclave_valid_addr = secs->base + secs->size + secs->runtime_size - g_page_size;
+#endif
 
     char hex[sizeof(sigstruct->enclave_hash.m) * 2 + 1];
     log_debug("Enclave initializing:");

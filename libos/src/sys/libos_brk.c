@@ -72,15 +72,26 @@ int init_brk_region(void* brk_start, size_t data_segment_size) {
             }
             /* Linux randomizes brk at offset from 0 to 0x2000000 from main executable data section
              * https://elixir.bootlin.com/linux/v5.6.3/source/arch/x86/kernel/process.c#L914 */
+#ifndef RUNTIME
             offset %= MIN((size_t)0x2000000, (size_t)((char*)g_pal_public_state->memory_address_end
                                                       - brk_max_size - (char*)brk_start));
+#else
+            offset %= MIN((size_t)0x2000000, (size_t)((char*)g_pal_public_state->memory_program_end
+                                                      - brk_max_size - (char*)brk_start));
+#endif
             offset = ALLOC_ALIGN_DOWN(offset);
         }
 
         brk_start = (char*)brk_start + offset;
 
+#ifndef RUNTIME
         ret = bkeep_mmap_fixed(brk_start, brk_max_size, PROT_NONE,
                                MAP_FIXED_NOREPLACE | VMA_UNMAPPED, NULL, 0, "heap");
+#else
+        // brk area should be inside the program region
+        ret = bkeep_mmap_fixed(brk_start, brk_max_size, PROT_NONE,
+                               MAP_FIXED_NOREPLACE | VMA_UNMAPPED, NULL, 0, "heap", true);
+#endif
         if (ret == -EEXIST) {
             /* Let's try mapping brk anywhere. */
             brk_start = NULL;
@@ -154,8 +165,13 @@ void* libos_syscall_brk(void* _brk) {
         size = brk_current - brk_aligned;
 
         if (size) {
+#ifndef RUNTIME
             if (bkeep_mmap_fixed(brk_aligned, brk_region.brk_end - brk_aligned, PROT_NONE,
                                  MAP_FIXED | VMA_UNMAPPED, NULL, 0, "heap")) {
+#else
+            if (bkeep_mmap_fixed(brk_aligned, brk_region.brk_end - brk_aligned, PROT_NONE,
+                                 MAP_FIXED | VMA_UNMAPPED, NULL, 0, "heap", true)) {
+#endif
                 goto out;
             }
 
@@ -182,15 +198,25 @@ void* libos_syscall_brk(void* _brk) {
     /* brk_aligned >= brk > brk_current */
     assert(size);
 
+#ifndef RUNTIME
     if (bkeep_mmap_fixed(brk_current, size, PROT_READ | PROT_WRITE,
                          MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, NULL, 0, "heap") < 0) {
+#else
+    if (bkeep_mmap_fixed(brk_current, size, PROT_READ | PROT_WRITE,
+                         MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, NULL, 0, "heap", true) < 0) {
+#endif
         goto out;
     }
 
     int ret = PalVirtualMemoryAlloc(brk_current, size, PAL_PROT_READ | PAL_PROT_WRITE);
     if (ret < 0) {
+#ifndef RUNTIME
         if (bkeep_mmap_fixed(brk_current, brk_region.brk_end - brk_current, PROT_NONE,
                              MAP_FIXED | VMA_UNMAPPED, NULL, 0, "heap") < 0) {
+#else
+        if (bkeep_mmap_fixed(brk_current, brk_region.brk_end - brk_current, PROT_NONE,
+                             MAP_FIXED | VMA_UNMAPPED, NULL, 0, "heap", true) < 0) {
+#endif
             BUG();
         }
         goto out;

@@ -260,6 +260,16 @@ int initial_mem_bkeep(size_t size, uintptr_t* out_addr) {
             if (addr < (uintptr_t)g_pal_public_state.memory_address_start) {
                 return PAL_ERROR_NOMEM;
             }
+
+#ifdef RUNTIME
+            // if runtime enabled, internal memory should locate in the runtime range
+            if (g_pal_public_state.memory_program_end < g_pal_public_state.memory_address_end
+                && addr < (uintptr_t)g_pal_public_state.memory_program_end) {
+                log_error("Failed to allocate initial memory, please enlarge the runtime size!");
+                return PAL_ERROR_NOMEM;
+            }
+#endif
+ 
             if (!overlaps_existing_range(addr, size, &addr)) {
                 break;
             }

@@ -25,6 +25,10 @@ struct pal_enclave_tcb {
 
     /* private to Linux-SGX PAL */
     uint64_t  enclave_size;
+#ifdef RUNTIME
+    uint64_t  runtime_size;
+    void*     ussa;
+#endif
     uint64_t  tcs_offset;
     uint64_t  initial_stack_addr;
     uint64_t  tmp_rip;

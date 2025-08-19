@@ -83,6 +83,9 @@ const struct generated_offset generated_offsets[] = {
     OFFSET(SGX_COMMON_SELF, pal_enclave_tcb, common.self),
     OFFSET(SGX_COMMON_STACK_PROTECTOR_CANARY, pal_enclave_tcb, common.stack_protector_canary),
     OFFSET(SGX_ENCLAVE_SIZE, pal_enclave_tcb, enclave_size),
+#ifdef RUNTIME
+    OFFSET(SGX_RUNTIME_SIZE, pal_enclave_tcb, runtime_size),
+#endif
     OFFSET(SGX_TCS_OFFSET, pal_enclave_tcb, tcs_offset),
     OFFSET(SGX_INITIAL_STACK_ADDR, pal_enclave_tcb, initial_stack_addr),
     OFFSET(SGX_TMP_RIP, pal_enclave_tcb, tmp_rip),
@@ -90,6 +93,9 @@ const struct generated_offset generated_offsets[] = {
     OFFSET(SGX_SIG_STACK_LOW, pal_enclave_tcb, sig_stack_low),
     OFFSET(SGX_SIG_STACK_HIGH, pal_enclave_tcb, sig_stack_high),
     OFFSET(SGX_SSA, pal_enclave_tcb, ssa),
+#ifdef RUNTIME
+    OFFSET(SGX_USSA, pal_enclave_tcb, ussa),
+#endif
     OFFSET(SGX_GPR, pal_enclave_tcb, gpr),
     OFFSET(SGX_EXIT_TARGET, pal_enclave_tcb, exit_target),
     OFFSET(SGX_FSBASE, pal_enclave_tcb, fsbase),
@@ -123,6 +129,9 @@ const struct generated_offset generated_offsets[] = {
     OFFSET_T(TCS_OGS_BASE, sgx_arch_tcs_t, ogs_base),
     OFFSET_T(TCS_OFS_LIMIT, sgx_arch_tcs_t, ofs_limit),
     OFFSET_T(TCS_OGS_LIMIT, sgx_arch_tcs_t, ogs_limit),
+#ifdef RUNTIME
+    OFFSET_T(TCS_OUSSA, sgx_arch_tcs_t, oussa),
+#endif
     DEFINE(TCS_SIZE, sizeof(sgx_arch_tcs_t)),
 
     /* sgx_attributes_t */

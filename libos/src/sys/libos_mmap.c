@@ -162,7 +162,11 @@ long libos_syscall_mmap(unsigned long addr, unsigned long length, unsigned long 
         memory_range_end = g_pal_public_state->shared_address_end;
     } else {
         memory_range_start = g_pal_public_state->memory_address_start;
+#ifndef RUNTIME
         memory_range_end = g_pal_public_state->memory_address_end;
+#else
+        memory_range_end = g_pal_public_state->memory_program_end;
+#endif
     }
     if (flags & (MAP_FIXED | MAP_FIXED_NOREPLACE)) {
         /* We know that `addr + length` does not overflow (`access_ok` above). */
@@ -207,12 +211,20 @@ long libos_syscall_mmap(unsigned long addr, unsigned long length, unsigned long 
 
             bkeep_convert_tmp_vma_to_user(tmp_vma);
 
+#ifndef RUNTIME
             ret = bkeep_mmap_fixed((void*)addr, length, prot, flags, hdl, offset, NULL);
+#else
+            ret = bkeep_mmap_fixed((void*)addr, length, prot, flags, hdl, offset, NULL, true);
+#endif
             if (ret < 0) {
                 BUG();
             }
         } else {
+#ifndef RUNTIME
             ret = bkeep_mmap_fixed((void*)addr, length, prot, flags, hdl, offset, NULL);
+#else
+            ret = bkeep_mmap_fixed((void*)addr, length, prot, flags, hdl, offset, NULL, true);
+#endif
             if (ret < 0) {
                 goto out_handle;
             }

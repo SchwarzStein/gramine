@@ -156,6 +156,12 @@ struct pal_public_state {
     void* shared_address_start;             /*!< usable shared memory start address */
     void* shared_address_end;               /*!< usable shared memory end address */
 
+#ifdef RUNTIME
+
+    void * memory_program_end;                 /*!< usable program memory end address>*/
+
+#endif
+
     struct pal_initial_mem_range* initial_mem_ranges; /*!< array of initial memory ranges, see
                                                            `pal_memory.c` for more details */
     size_t initial_mem_ranges_len;

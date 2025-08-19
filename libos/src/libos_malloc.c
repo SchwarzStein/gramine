@@ -35,8 +35,13 @@ void* __system_malloc(size_t size) {
     size_t alloc_size = ALLOC_ALIGN_UP(size);
     void* addr = NULL;
 
+#ifndef RUNTIME
     int ret = bkeep_mmap_any(alloc_size, PROT_READ | PROT_WRITE,
                              MAP_PRIVATE | MAP_ANONYMOUS | VMA_INTERNAL, NULL, 0, "slab", &addr);
+#else
+    int ret = bkeep_mmap_any(alloc_size, PROT_READ | PROT_WRITE,
+                             MAP_PRIVATE | MAP_ANONYMOUS | VMA_INTERNAL, NULL, 0, "slab", &addr, false);
+#endif
     if (ret < 0) {
         return NULL;
     }

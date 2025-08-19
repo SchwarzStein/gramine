@@ -257,8 +257,14 @@ static int execute_loadcmd(const struct loadcmd* c, elf_addr_t base_diff,
         void* map_start = (void*)(c->start + base_diff);
         size_t map_size = c->map_end - c->start;
 
+#ifndef RUNTIME
         ret = bkeep_mmap_fixed(map_start, map_size, c->prot, map_flags, file, c->map_off,
                                /*comment=*/NULL);
+#else
+        // elf file should be inside the program region
+        ret = bkeep_mmap_fixed(map_start, map_size, c->prot, map_flags, file, c->map_off,
+                               /*comment=*/NULL, /*user_check*/true);
+#endif
         if (ret < 0) {
             log_debug("failed to bookkeep address of segment");
             return ret;
@@ -310,8 +316,13 @@ static int execute_loadcmd(const struct loadcmd* c, elf_addr_t base_diff,
         int zero_map_flags = MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS;
         pal_prot_flags_t zero_pal_prot = LINUX_PROT_TO_PAL(c->prot, zero_map_flags);
 
+#ifndef RUNTIME
         if ((ret = bkeep_mmap_fixed(zero_page_start, zero_page_size, c->prot, zero_map_flags,
                                     /*file=*/NULL, /*offset=*/0, /*comment=*/NULL)) < 0) {
+#else
+        if ((ret = bkeep_mmap_fixed(zero_page_start, zero_page_size, c->prot, zero_map_flags,
+                                    /*file=*/NULL, /*offset=*/0, /*comment=*/NULL, /*user_check=*/true)) < 0) {                         
+#endif
             log_debug("cannot bookkeep address of zero-fill pages");
             return ret;
         }

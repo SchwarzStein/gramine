@@ -81,8 +81,13 @@ int alloc_thread_libos_stack(struct libos_thread* thread) {
     void* addr = NULL;
     int prot = PROT_READ | PROT_WRITE;
     int flags = MAP_PRIVATE | MAP_ANONYMOUS | VMA_INTERNAL;
+#ifndef RUNTIME
     int ret = bkeep_mmap_any(LIBOS_THREAD_LIBOS_STACK_SIZE, prot, flags, /*file=*/NULL,
                              /*offset=*/0, "libos_stack", &addr);
+#else
+    int ret = bkeep_mmap_any(LIBOS_THREAD_LIBOS_STACK_SIZE, prot, flags, /*file=*/NULL,
+                             /*offset=*/0, "libos_stack", &addr, false);
+#endif
     if (ret < 0) {
         return ret;
     }

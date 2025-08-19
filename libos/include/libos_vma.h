@@ -76,8 +76,13 @@ int bkeep_mprotect(void* addr, size_t length, int prot, bool is_internal);
  * MAP_FIXED_NOREPLACE - the former forces bookkeeping and removes any overlapping VMAs, the latter
  * atomically checks for overlaps and fails if one is found.
  */
+#ifndef RUNTIME
 int bkeep_mmap_fixed(void* addr, size_t length, int prot, int flags, struct libos_handle* file,
                      uint64_t offset, const char* comment);
+#else
+int bkeep_mmap_fixed(void* addr, size_t length, int prot, int flags, struct libos_handle* file,
+                     uint64_t offset, const char* comment, bool user_check);
+#endif
 
 /*
  * Bookkeeping an allocation of memory at any address in the range [`bottom_addr`, `top_addr`).
@@ -91,8 +96,13 @@ int bkeep_mmap_any_in_range(void* bottom_addr, void* top_addr, size_t length, in
 
 /* Shorthand for `bkeep_mmap_any_in_range` with the range
  * [`g_pal_public_state->memory_address_start`, `g_pal_public_state->memory_address_end`). */
+#ifndef RUNTIME
 int bkeep_mmap_any(size_t length, int prot, int flags, struct libos_handle* file, uint64_t offset,
                    const char* comment, void** ret_val_ptr);
+#else
+int bkeep_mmap_any(size_t length, int prot, int flags, struct libos_handle* file, uint64_t offset,
+                   const char* comment, void** ret_val_ptr, bool user);
+#endif
 
 /* First tries to bookkeep in [`g_pal_public_state->memory_address_start`, `aslr_addr_top`) range
  * and if it fails calls `bkeep_mmap_any`. `aslr_addr_top` is a value randomized on each program

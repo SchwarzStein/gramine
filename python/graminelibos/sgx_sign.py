@@ -95,7 +95,7 @@ def collect_cpu_feature_bits(manifest_cpu_features, options_dict, val, mask, sec
 def get_enclave_attributes(manifest_sgx):
     flags_dict = {
         'debug': offs.SGX_FLAGS_DEBUG,
-        'runtime': offs.SGX_FLAGS_RUNTIME,
+        'runtime_enable': offs.SGX_FLAGS_RUNTIME,
     }
     flags = collect_bits(manifest_sgx, flags_dict)
     if ARCHITECTURE == 'amd64':
@@ -134,7 +134,7 @@ PAGEINFO_W = 0x2
 PAGEINFO_X = 0x4
 PAGEINFO_TCS = 0x100
 PAGEINFO_REG = 0x200
-
+PAGEINFO_HANDLER = 0x700
 
 def get_loadcmds(elf_filename):
     with open(elf_filename, 'rb') as file:
@@ -187,6 +187,11 @@ def get_memory_areas(attr, libpal):
         MemoryArea('ssa',
                    size=attr['max_threads'] * offs.SSA_FRAME_SIZE * offs.SSA_FRAME_NUM,
                    flags=PAGEINFO_R | PAGEINFO_W | PAGEINFO_REG))
+    if attr['runtime_enable']:
+        areas.append(
+            MemoryArea('ussa',
+                    size=attr['max_threads'] * offs.SSA_FRAME_SIZE * offs.SSA_FRAME_NUM,
+                    flags=PAGEINFO_R | PAGEINFO_W | PAGEINFO_REG))
     areas.append(MemoryArea('tcs', size=attr['max_threads'] * offs.TCS_SIZE,
                             flags=PAGEINFO_TCS))
     areas.append(MemoryArea('tls', size=attr['max_threads'] * offs.PAGESIZE,
@@ -198,6 +203,9 @@ def get_memory_areas(attr, libpal):
     for _ in range(attr['max_threads']):
         areas.append(MemoryArea('sig_stack', size=offs.ENCLAVE_SIG_STACK_SIZE,
                                 flags=PAGEINFO_R | PAGEINFO_W | PAGEINFO_REG))
+
+    if attr['runtime_enable']:
+        areas.append(MemoryArea('handler', size=offs.PAGESIZE, flags=PAGEINFO_HANDLER))
 
     areas.append(MemoryArea('pal', elf_filename=libpal, flags=PAGEINFO_REG))
     return areas
@@ -229,6 +237,8 @@ def gen_area_content(attr, areas, enclave_base, enclave_heap_min):
     manifest_area = find_area(areas, 'manifest')
     pal_area = find_area(areas, 'pal')
     ssa_area = find_area(areas, 'ssa')
+    if attr['runtime_enable']:
+        ussa_area = find_area(areas, 'ussa')
     tcs_area = find_area(areas, 'tcs')
     tls_area = find_area(areas, 'tls')
     stacks = find_areas(areas, 'stack')
@@ -280,13 +290,19 @@ def gen_area_content(attr, areas, enclave_base, enclave_heap_min):
         set_tls_field(t, offs.SGX_MANIFEST_SIZE, len(manifest_area.content))
         set_tls_field(t, offs.SGX_HEAP_MIN, enclave_heap_min)
         set_tls_field(t, offs.SGX_HEAP_MAX, enclave_heap_max)
+        if attr['runtime_enable']:
+            ussa = ussa_area.addr + offs.SSA_FRAME_SIZE * offs.SSA_FRAME_NUM * t
+            ussa_offset = ussa - enclave_base
+            set_tcs_field(t, offs.TCS_OUSSA, '<Q', ussa_offset)
+            set_tls_field(t, offs.SGX_RUNTIME_SIZE, attr['runtime_size'])
+            set_tls_field(t, offs.SGX_USSA, ussa)
 
     tcs_area.content = tcs_data
     tls_area.content = tls_data
 
 
 def populate_memory_areas(attr, areas, enclave_base, enclave_heap_min):
-    last_populated_addr = enclave_base + attr['enclave_size']
+    last_populated_addr = enclave_base + attr['enclave_size'] + attr['runtime_size']
 
     for area in areas:
         if area.addr is not None:
@@ -303,6 +319,8 @@ def populate_memory_areas(attr, areas, enclave_base, enclave_heap_min):
     if attr['edmm_enable']:
         return areas
 
+    if attr['runtime_enable'] and last_populated_addr < enclave_base + attr['enclave_size']:
+        raise Exception('Runtime size is not large enough')
     free_areas = []
     for area in areas:
         addr = area.addr + area.size
@@ -331,12 +349,12 @@ def generate_measurement(enclave_base, attr, areas, verbose=False):
         digest.update(data)
 
     def do_eadd(digest, offset, flags):
-        assert offset < attr['enclave_size']
+        assert offset < attr['enclave_size'] + attr['runtime_size']
         data = struct.pack('<8sQQ40s', b'EADD', offset, flags, b'')
         digest.update(data)
 
     def do_eextend(digest, offset, content):
-        assert offset < attr['enclave_size']
+        assert offset < attr['enclave_size'] + attr['runtime_size']
 
         if len(content) != 256:
             raise ValueError('Exactly 256 bytes expected')
@@ -355,7 +373,7 @@ def generate_measurement(enclave_base, attr, areas, verbose=False):
                 do_eextend(digest, addr - enclave_base + i, content[i:i + 256])
 
     mrenclave = hashlib.sha256()
-    do_ecreate(mrenclave, attr['enclave_size'])
+    do_ecreate(mrenclave, attr['enclave_size'] + attr['runtime_size'])
 
     def print_area(addr, size, flags, desc, measured):
         assert verbose
@@ -364,6 +382,8 @@ def generate_measurement(enclave_base, attr, areas, verbose=False):
             type_ = 'REG'
         if flags & PAGEINFO_TCS:
             type_ = 'TCS'
+        if flags & PAGEINFO_HANDLER == PAGEINFO_HANDLER:
+            type_ = 'HANDLER'
         prot = ['-', '-', '-']
         if flags & PAGEINFO_R:
             prot[0] = 'R'
@@ -466,17 +486,30 @@ def get_mrenclave_and_manifest(manifest_path, libpal, verbose=False):
     manifest = Manifest.loads(manifest_data.decode('utf-8'))
 
     manifest_sgx = manifest['sgx']
+
+    enclave_size = parse_size(manifest_sgx['enclave_size'])
+    runtime_enable = manifest_sgx.get('runtime_enable', False)
+    runtime_size = 0
+    
+    if runtime_enable:
+        runtime_size = parse_size(manifest_sgx['runtime_size'])
+
     attr = {
-        'enclave_size': parse_size(manifest_sgx['enclave_size']),
+        'enclave_size': enclave_size,
         'edmm_enable': manifest_sgx.get('edmm_enable', False),
         'max_threads': manifest_sgx['max_threads'],
+        'runtime_enable': runtime_enable,
+        'runtime_size': runtime_size,
     }
 
     if verbose:
         print('Attributes (required for enclave measurement):')
         print(f'    size:        {attr["enclave_size"]:#x}')
         print(f'    edmm:        {attr["edmm_enable"]}')
+        print(f'    runtime:     {attr["runtime_enable"]}')
         print(f'    max_threads: {attr["max_threads"]}')
+        if runtime_enable:
+            print(f'    runtime_size:{attr["runtime_size"]:#x}')
 
         print('SGX remote attestation:')
         attestation_type = manifest_sgx.get('remote_attestation', 'none')

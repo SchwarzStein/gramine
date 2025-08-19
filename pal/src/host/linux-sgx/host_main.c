@@ -250,6 +250,28 @@ static int initialize_enclave(struct pal_enclave* enclave, const char* manifest_
     }
 #endif
 
+#ifdef RUNTIME
+        unsigned long runtime_base = enclave->baseaddr + enclave->size;
+        if (ranges_overlap(runtime_base, runtime_base + enclave->runtime_size,
+                       SHARED_ADDR_MIN, SHARED_ADDR_MIN + SHARED_MEM_SIZE)
+        || ranges_overlap(runtime_base, runtime_base + enclave->runtime_size,
+                          DBGINFO_ADDR, DBGINFO_ADDR + sizeof(struct enclave_dbginfo))) {
+        log_error("Enclave runtime range collides with shared memory or debug range. Consider reducing "
+                  "enclave size.");
+        ret = -EINVAL;
+        goto out;
+
+    }
+#ifdef ASAN
+    if (ranges_overlap(runtime_base, runtime_base + enclave->runtime_size,
+                       ASAN_SHADOW_START, ASAN_SHADOW_START + ASAN_SHADOW_LENGTH)) {
+        log_error("Enclave runtime range collides with ASan range. Consider reducing enclave size.");
+        ret = -EINVAL;
+        goto out;
+    }
+#endif
+#endif
+
     sig_path = alloc_concat(g_pal_enclave.application_path, -1, ".sig", -1);
     if (!sig_path) {
         ret = -ENOMEM;
@@ -286,6 +308,14 @@ static int initialize_enclave(struct pal_enclave* enclave, const char* manifest_
     memset(&enclave_secs, 0, sizeof(enclave_secs));
     enclave_secs.base = enclave->baseaddr;
     enclave_secs.size = enclave->size;
+
+#ifdef RUNTIME
+    if (enclave->runtime_enable) {
+        enclave_secs.runtime_base = enclave_secs.base + enclave_secs.size;
+        enclave_secs.runtime_size = enclave->runtime_size;
+    }
+#endif
+
     ret = create_enclave(&enclave_secs, &enclave_sigstruct);
     if (ret < 0) {
         log_error("Creating enclave failed: %s", unix_strerror(ret));
@@ -305,7 +335,10 @@ static int initialize_enclave(struct pal_enclave* enclave, const char* manifest_
             ZERO,
             BUF,
             TCS,
-            TLS
+            TLS,
+#ifdef RUNTIME
+            HANDLER,
+#endif
         } data_src;
         union {
             int fd; // valid iff data_src == ELF_FD
@@ -362,6 +395,21 @@ static int initialize_enclave(struct pal_enclave* enclave, const char* manifest_
                           .type         = SGX_PAGE_TYPE_REG};
     struct mem_area* ssa_area = &areas[area_num++];
 
+#ifdef RUNTIME
+    struct mem_area* ussa_area = NULL;
+    if (enclave->runtime_enable) {
+        areas[area_num] =
+        (struct mem_area){.desc         = "ussa",
+                          .skip_eextend = false,
+                          .data_src     = ZERO,
+                          .addr         = 0,
+                          .size         = enclave->thread_num * enclave->ssa_frame_size *
+                                              SSA_FRAME_NUM,
+                          .prot         = PROT_READ | PROT_WRITE,
+                          .type         = SGX_PAGE_TYPE_REG};
+        ussa_area = &areas[area_num++];
+    }
+#endif
     areas[area_num] = (struct mem_area){.desc = "tcs",
                                         .skip_eextend = false,
                                         .data_src     = TCS,
@@ -404,6 +452,19 @@ static int initialize_enclave(struct pal_enclave* enclave, const char* manifest_
         area_num++;
     }
 
+#ifdef RUNTIME
+    if (enclave->runtime_enable) {
+        areas[area_num] = (struct mem_area){.desc = "handler",
+                                            .skip_eextend = false,
+                                            .data_src     = HANDLER,
+                                            .addr         = 0,
+                                            .size         = g_page_size,
+                                            .prot         = 0,
+                                            .type         = SGX_PAGE_TYPE_HANDLER};
+        area_num++;
+    }
+#endif
+
     areas[area_num] = (struct mem_area){.desc         = "pal",
                                         .skip_eextend = false,
                                         .data_src     = ELF_FD,
@@ -419,7 +480,11 @@ static int initialize_enclave(struct pal_enclave* enclave, const char* manifest_
         goto out;
     }
 
+#ifndef RUNTIME
     uintptr_t last_populated_addr = enclave->baseaddr + enclave->size;
+#else
+    uintptr_t last_populated_addr = enclave->baseaddr + enclave->size + enclave->runtime_size;
+#endif
     for (int i = 0; i < area_num; i++) {
         if (areas[i].addr)
             continue;
@@ -478,6 +543,12 @@ static int initialize_enclave(struct pal_enclave* enclave, const char* manifest_
                 gs->common.self = (PAL_TCB*)(tls_area->addr + g_page_size * t);
                 gs->common.stack_protector_canary = STACK_PROTECTOR_CANARY_DEFAULT;
                 gs->enclave_size = enclave->size;
+#ifdef RUNTIME
+if (enclave->runtime_enable) {
+                gs->runtime_size = enclave->runtime_size;
+                gs->ussa = (void*)ussa_area->addr + enclave->ssa_frame_size * SSA_FRAME_NUM * t;
+}
+#endif
                 gs->tcs_offset = tcs_area->addr - enclave->baseaddr + g_page_size * t;
                 gs->initial_stack_addr = stack_areas[t].addr + ENCLAVE_STACK_SIZE;
                 gs->sig_stack_low = sig_stack_areas[t].addr;
@@ -503,9 +574,20 @@ static int initialize_enclave(struct pal_enclave* enclave, const char* manifest_
                 tcs->ofs_limit = 0xfff;
                 tcs->ogs_limit = 0xfff;
                 tcs_addrs[t] = (void*)tcs_area->addr + g_page_size * t;
+#ifdef RUNTIME
+if (enclave->runtime_enable)
+                tcs->oussa      = ussa_area->addr - enclave->baseaddr
+                                 + enclave->ssa_frame_size * SSA_FRAME_NUM * t;
+#endif
             }
         } else if (areas[i].data_src == BUF) {
             memcpy(data, areas[i].buf, areas[i].buf_size);
+#ifdef RUNTIME
+        } else if (areas[i].data_src == HANDLER) {
+            //TODO: add handler address in the page
+            void* handler = data;
+            memset(handler, 0, g_page_size);
+#endif
         } else {
             assert(areas[i].data_src == ZERO);
         }
@@ -639,6 +721,33 @@ static int parse_loader_config(char* manifest, struct pal_enclave* enclave_info,
         ret = -EINVAL;
         goto out;
     }
+
+#ifdef RUNTIME
+    ret = toml_bool_in(manifest_root, "sgx.runtime_enable", /*defaultval=*/false,
+                       &enclave_info->runtime_enable);
+    if (ret < 0) {
+        log_error("Cannot parse 'sgx.runtime'");
+        ret = -EINVAL;
+        goto out;
+    }
+
+    if (enclave_info->runtime_enable) {
+        ret = toml_sizestring_in(manifest_root, "sgx.runtime_size", /*defaultval=*/0,
+                             &enclave_info->runtime_size);
+        if (ret < 0) {
+            log_error("Cannot parse 'sgx.runtime_size'");
+            ret = -EINVAL;
+            goto out; 
+        }
+        if (!enclave_info->runtime_size || !IS_POWER_OF_2(enclave_info->runtime_size)) {
+            log_error("Enclave runtime size not a power of two (an SGX-imposed requirement)");
+            ret = -EINVAL;
+            goto out;
+        }
+    } else {
+        enclave_info->runtime_size = 0;
+    }
+#endif
 
     int64_t thread_num_int64;
     ret = toml_int_in(manifest_root, "sgx.max_threads", /*defaultval=*/-1, &thread_num_int64);

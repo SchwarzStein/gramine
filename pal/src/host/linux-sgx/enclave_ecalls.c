@@ -49,7 +49,11 @@ void handle_ecall(long ecall_index, void* ecall_args, void* exit_target, void* e
 
     if (!g_enclave_top) {
         g_enclave_base = (uintptr_t)enclave_base_addr;
+#ifndef RUNTIME
         g_enclave_top  = g_enclave_base + GET_ENCLAVE_TCB(enclave_size);
+#else
+        g_enclave_top  = g_enclave_base + GET_ENCLAVE_TCB(enclave_size) + GET_ENCLAVE_TCB(runtime_size);
+#endif
     }
 
     /* disallow malicious URSP (that points into the enclave) */

@@ -55,14 +55,37 @@ static spinlock_t g_unused_tcs_pages_num_lock = INIT_SPINLOCK_UNLOCKED;
  *                  |  stack            | ENCLAVE_STACK_SIZE
  *                  +-------------------+
  *
+ * 
+ *  If runtime attribute is enabled:
+ * 
+ *         TCS +--> +-------------------+
+ *                  |  TCS              | PAGE_SIZE
+ *         SSA +--> +-------------------+
+ *                  |  SSA              | SSA_FRAME_NUM * SSA_FRAME_SIZE
+ *        uSSA +--> +-------------------+
+ *                  |  USSA             | SSA_FRAME_NUM * SSA_FRAME_SIZE
+ *         TCB +--> +-------------------+
+ *                  |  TCB              | PAGE_SIZE
+ *   sig_stack +--> +-------------------+
+ *                  |  sig_stack        | ENCLAVE_SIG_STACK_SIZE
+ *       stack +--> +-------------------+
+ *                  |  stack            | ENCLAVE_STACK_SIZE
+ *                  +-------------------+
+ * 
  */
+
 #define THREAD_DATA_SIZE                                                               \
     (PAGE_SIZE + SSA_FRAME_NUM * SSA_FRAME_SIZE + PAGE_SIZE + ENCLAVE_SIG_STACK_SIZE + \
      ENCLAVE_STACK_SIZE)
 static void init_dynamic_thread(void* addr) {
     sgx_arch_tcs_t* tcs         = addr;
     void* ssa                   = (char*)tcs + PAGE_SIZE;
+#ifdef RUNTIME
+    void* ussa                  = ssa + SSA_FRAME_NUM * SSA_FRAME_SIZE;
+    struct pal_enclave_tcb* tcb = (struct pal_enclave_tcb*)(ussa + SSA_FRAME_NUM * SSA_FRAME_SIZE);
+#else
     struct pal_enclave_tcb* tcb = (struct pal_enclave_tcb*)(ssa + SSA_FRAME_NUM * SSA_FRAME_SIZE);
+#endif
     void* sig_stack             = (char*)tcb + PAGE_SIZE;
     void* stack                 = sig_stack + ENCLAVE_SIG_STACK_SIZE;
 
@@ -70,6 +93,10 @@ static void init_dynamic_thread(void* addr) {
     tcb->common.self                   = (PAL_TCB*)tcb;
     tcb->common.stack_protector_canary = STACK_PROTECTOR_CANARY_DEFAULT;
     tcb->enclave_size                  = GET_ENCLAVE_TCB(enclave_size);
+#ifdef RUNTIME
+    tcb->runtime_size                  = GET_ENCLAVE_TCB(runtime_size);
+    tcb->ussa                          = ussa;
+#endif
     tcb->tcs_offset                    = (uint64_t)tcs - g_enclave_base;
     tcb->initial_stack_addr            = (uint64_t)stack + ENCLAVE_STACK_SIZE;
     tcb->sig_stack_low                 = (uint64_t)sig_stack;

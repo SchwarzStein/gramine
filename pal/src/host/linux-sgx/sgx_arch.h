@@ -150,7 +150,9 @@ typedef struct {
     sgx_prod_id_t        isv_prod_id;
     sgx_isv_svn_t        isv_svn;
     sgx_config_svn_t     config_svn;
-    uint8_t              reserved4[3834];
+    uint64_t             runtime_size;
+    uint64_t             runtime_base;
+    uint8_t              reserved4[3818];
 } sgx_arch_secs_t;
 
 typedef struct {
@@ -165,7 +167,10 @@ typedef struct {
     uint64_t ogs_base;
     uint32_t ofs_limit;
     uint32_t ogs_limit;
-    uint8_t  reserved3[4024];
+    uint64_t cetssa;
+    uint64_t prevssp;
+    uint64_t oussa;
+    uint8_t  reserved3[4000];
 } sgx_arch_tcs_t;
 static_assert(sizeof(sgx_arch_tcs_t) == 4096, "incorrect struct size");
 
@@ -297,6 +302,7 @@ enum sgx_page_type {
     SGX_PAGE_TYPE_REG,
     SGX_PAGE_TYPE_VA,
     SGX_PAGE_TYPE_TRIM,
+    SGX_PAGE_TYPE_HANDLER = 7,
 };
 
 #define SGX_SECINFO_FLAGS_R         (1 << 0)
