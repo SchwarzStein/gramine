@@ -248,7 +248,9 @@ int add_pages_to_enclave(sgx_arch_secs_t* secs, void* addr, void* user_addr, uns
             break;
 #ifdef RUNTIME
         case SGX_PAGE_TYPE_HANDLER:
-            secinfo.flags = SGX_PAGE_TYPE_HANDLER << SGX_SECINFO_FLAGS_TYPE_SHIFT;
+            assert( prot == (PAL_PROT_READ | PAL_PROT_EXEC) );
+            secinfo.flags = SGX_PAGE_TYPE_HANDLER << SGX_SECINFO_FLAGS_TYPE_SHIFT
+                            | PAL_TO_SGX_PROT(prot);
             break;
 #endif
         default:
@@ -271,6 +273,13 @@ int add_pages_to_enclave(sgx_arch_secs_t* secs, void* addr, void* user_addr, uns
         if (prot & PROT_EXEC)
             p[2] = 'X';
     }
+
+#ifdef RUNTIME
+    if (type == SGX_PAGE_TYPE_HANDLER) {
+        p[0] = 'R';
+        p[2] = 'X';
+    }
+#endif
 
     if (size == g_page_size)
         log_debug("Adding page  to enclave: %p [%s:%s] (%s)%s", addr, t, p, comment, m);
@@ -351,6 +360,7 @@ int add_pages_to_enclave(sgx_arch_secs_t* secs, void* addr, void* user_addr, uns
     uint64_t mapped = DO_SYSCALL(mmap, addr, size, prot, MAP_FIXED | MAP_SHARED, g_isgx_device, 0);
     if (IS_PTR_ERR(mapped)) {
         ret = PTR_TO_ERR(mapped);
+        log_error("mmap addr 0x%lx, size: 0x%lx", (uint64_t)addr, size);
         log_error("Cannot map enclave pages: %s", unix_strerror(ret));
         return ret;
     }

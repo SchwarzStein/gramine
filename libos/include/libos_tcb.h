@@ -38,6 +38,10 @@ static inline void __libos_tcb_init(libos_tcb_t* libos_tcb) {
     libos_tcb->libos_syscall_entry = &libos_syscall_entry;
     libos_tcb->context.syscall_nr = -1;
     libos_tcb->vma_cache = NULL;
+#ifdef RUNTIME
+    /* It is safe to register it when runtime is not enabled */
+    PalSyscallHandlerSet(&libos_syscall_entry);
+#endif
 }
 
 /* Call this function at the beginning of thread execution. */

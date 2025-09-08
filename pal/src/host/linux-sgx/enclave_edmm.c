@@ -52,6 +52,16 @@ static void sgx_emodpe(uint64_t addr, uint64_t prot) {
     /* `EMODPE` does not return errors, it can only fault. */
 }
 
+#ifdef RUNTIME
+static void sgx_emodp(uint64_t addr, uint64_t prot) {
+    alignas(64) sgx_arch_sec_info_t secinfo = {
+        .flags = prot,
+    };
+    enclu(EMODP, (uint64_t)&secinfo, addr, 0);
+    /* `EMODP` does not return errors, it can only fault. */
+}
+#endif
+
 int sgx_edmm_add_pages(uint64_t addr, size_t count, uint64_t prot) {
     int ret;
 
@@ -72,6 +82,15 @@ int sgx_edmm_add_pages(uint64_t addr, size_t count, uint64_t prot) {
             die_or_inf_loop();
         }
     }
+
+#ifdef RUNTIME
+    if (GET_ENCLAVE_TCB(runtime_size) > 0 && (prot != (SGX_SECINFO_FLAGS_R | SGX_SECINFO_FLAGS_W))) {
+        for (size_t i = 0; i < count; i++) {
+            sgx_emodp(addr + i * PAGE_SIZE, prot);
+        }
+        return 0;
+    }
+#endif
 
     if (prot & ~(SGX_SECINFO_FLAGS_R | SGX_SECINFO_FLAGS_W)) {
         for (size_t i = 0; i < count; i++) {
@@ -178,6 +197,15 @@ int sgx_edmm_set_page_permissions(uint64_t addr, size_t count, uint64_t prot) {
         /* HW limitation. */
         prot |= SGX_SECINFO_FLAGS_R;
     }
+
+#ifdef RUNTIME
+    if (GET_ENCLAVE_TCB(runtime_size) > 0 ) {
+        for (size_t i = 0; i < count; i++) {
+            sgx_emodp(addr + i * PAGE_SIZE, prot);
+        }
+        return 0;
+    }
+#endif
 
     for (size_t i = 0; i < count; i++) {
         sgx_emodpe(addr + i * PAGE_SIZE, prot);

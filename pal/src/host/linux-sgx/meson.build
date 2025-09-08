@@ -54,78 +54,159 @@ pal_sgx_map = custom_target('pal.map',
 
 pal_sgx_lds = meson.current_source_dir() / 'enclave.lds'
 
-libpal_sgx = shared_library('pal',
-    'common_manifest_sgx_parser.c',
-    'enclave_api.S',
-    'enclave_ecalls.c',
-    'enclave_edmm.c',
-    'enclave_entry.S',
-    'enclave_framework.c',
-    'enclave_ocalls.c',
-    'enclave_platform.c',
-    'enclave_xstate.c',
-    'pal_console.c',
-    'pal_devices.c',
-    'pal_eventfd.c',
-    'pal_events.c',
-    'pal_exception.c',
-    'pal_files.c',
-    'pal_main.c',
-    'pal_memory.c',
-    'pal_misc.c',
-    'pal_object.c',
-    'pal_pipes.c',
-    'pal_process.c',
-    'pal_rtld.c',
-    'pal_sockets.c',
-    'pal_streams.c',
-    'pal_threading.c',
-    pal_sgx_asm_offsets_h,
-    pal_common_sources,
-    pal_linux_common_sources_enclave,
+pal_sgx_lds_runtime = meson.current_source_dir() / 'enclave_runtime.lds'
 
-    include_directories: sgx_inc,
+if runtime
+    libpal_sgx = shared_library('pal',
+        'common_manifest_sgx_parser.c',
+        'enclave_api.S',
+        'enclave_ecalls.c',
+        'enclave_edmm.c',
+        'enclave_entry.S',
+        'enclave_runtime_default_handler.S',
+        'enclave_runtime_internal_handler.S',
+        'runtime_handler.S',
+        'enclave_framework.c',
+        'enclave_ocalls.c',
+        'enclave_platform.c',
+        'enclave_xstate.c',
+        'enclave_runtime_handler.c',
+        'pal_console.c',
+        'pal_devices.c',
+        'pal_eventfd.c',
+        'pal_events.c',
+        'pal_exception.c',
+        'pal_files.c',
+        'pal_main.c',
+        'pal_memory.c',
+        'pal_misc.c',
+        'pal_object.c',
+        'pal_pipes.c',
+        'pal_process.c',
+        'pal_rtld.c',
+        'pal_sockets.c',
+        'pal_streams.c',
+        'pal_threading.c',
+        pal_sgx_asm_offsets_h,
+        pal_common_sources,
+        pal_linux_common_sources_enclave,
 
-    c_args: [
-        cflags_pal_sgx,
-        cflags_sanitizers,
-        cflags_custom_stack_protector,
-        '-DIN_ENCLAVE',
-    ],
+        include_directories: sgx_inc,
 
-    link_args: [
-        '-nostdlib',
+        c_args: [
+            cflags_pal_sgx,
+            cflags_sanitizers,
+            cflags_custom_stack_protector,
+            '-DIN_ENCLAVE',
+        ],
 
-        # For PAL symbol resolution, we use old-style hash (DT_HASH) table instead of the default
-        # GNU hash (DT_GNU_HASH) table -- to figure out the number of dynamic symbols in the SYMTAB
-        # symbol table
-        '-Wl,--hash-style=sysv',
+        link_args: [
+            '-nostdlib',
 
-        # PAL is expected to be linked with RELRO (Relocation Read-Only)
-        '-Wl,-zrelro',
-        '-Wl,-znow',
+            # For PAL symbol resolution, we use old-style hash (DT_HASH) table instead of the default
+            # GNU hash (DT_GNU_HASH) table -- to figure out the number of dynamic symbols in the SYMTAB
+            # symbol table
+            '-Wl,--hash-style=sysv',
 
-        '-Wl,-zcombreloc',
-        '-Wl,-zdefs',
-        '-Wl,--version-script=@0@'.format(pal_sgx_map.full_path()),
-        '-Wl,-T@0@'.format(pal_sgx_lds),
-        '-Wl,--eh-frame-hdr',
-    ],
+            # PAL is expected to be linked with RELRO (Relocation Read-Only)
+            '-Wl,-zrelro',
+            '-Wl,-znow',
 
-    link_depends: [
-        pal_sgx_map,
-        pal_sgx_lds,
-    ],
+            '-Wl,-zcombreloc',
+            '-Wl,-zdefs',
+            '-Wl,--version-script=@0@'.format(pal_sgx_map.full_path()),
+            '-Wl,-T@0@'.format(pal_sgx_lds_runtime),
+            '-Wl,--eh-frame-hdr',
+        ],
 
-    dependencies: [
-        common_dep,
-        cryptoadapter_dep,
-        ioctls_dep,
-    ],
+        link_depends: [
+            pal_sgx_map,
+            pal_sgx_lds,
+        ],
 
-    install: true,
-    install_dir: pkglibdir / 'sgx',
-)
+        dependencies: [
+            common_dep,
+            cryptoadapter_dep,
+            ioctls_dep,
+        ],
+
+        install: true,
+        install_dir: pkglibdir / 'sgx',
+    )
+else
+    libpal_sgx = shared_library('pal',
+        'common_manifest_sgx_parser.c',
+        'enclave_api.S',
+        'enclave_ecalls.c',
+        'enclave_edmm.c',
+        'enclave_entry.S',
+        'enclave_framework.c',
+        'enclave_ocalls.c',
+        'enclave_platform.c',
+        'enclave_xstate.c',
+        'pal_console.c',
+        'pal_devices.c',
+        'pal_eventfd.c',
+        'pal_events.c',
+        'pal_exception.c',
+        'pal_files.c',
+        'pal_main.c',
+        'pal_memory.c',
+        'pal_misc.c',
+        'pal_object.c',
+        'pal_pipes.c',
+        'pal_process.c',
+        'pal_rtld.c',
+        'pal_sockets.c',
+        'pal_streams.c',
+        'pal_threading.c',
+        pal_sgx_asm_offsets_h,
+        pal_common_sources,
+        pal_linux_common_sources_enclave,
+
+        include_directories: sgx_inc,
+
+        c_args: [
+            cflags_pal_sgx,
+            cflags_sanitizers,
+            cflags_custom_stack_protector,
+            '-DIN_ENCLAVE',
+        ],
+
+        link_args: [
+            '-nostdlib',
+
+            # For PAL symbol resolution, we use old-style hash (DT_HASH) table instead of the default
+            # GNU hash (DT_GNU_HASH) table -- to figure out the number of dynamic symbols in the SYMTAB
+            # symbol table
+            '-Wl,--hash-style=sysv',
+
+            # PAL is expected to be linked with RELRO (Relocation Read-Only)
+            '-Wl,-zrelro',
+            '-Wl,-znow',
+
+            '-Wl,-zcombreloc',
+            '-Wl,-zdefs',
+            '-Wl,--version-script=@0@'.format(pal_sgx_map.full_path()),
+            '-Wl,-T@0@'.format(pal_sgx_lds),
+            '-Wl,--eh-frame-hdr',
+        ],
+
+        link_depends: [
+            pal_sgx_map,
+            pal_sgx_lds,
+        ],
+
+        dependencies: [
+            common_dep,
+            cryptoadapter_dep,
+            ioctls_dep,
+        ],
+
+        install: true,
+        install_dir: pkglibdir / 'sgx',
+    )
+endif
 
 # host (untrusted runtime)
 libpal_sgx_host = executable('loader',

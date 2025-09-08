@@ -101,3 +101,30 @@ int _PalFreeThenLazyReallocCommittedPages(void* addr, size_t size) {
     int ret = DO_SYSCALL(madvise, addr, size, MADV_DONTNEED);
     return ret < 0 ? unix_to_pal_error(ret) : 0;
 }
+
+#ifdef RUNTIME
+noreturn void _PalSwitchToUser(elf_addr_t entry, void* argp) {
+    __asm__ __volatile__ (
+        "xor %%rdx, %%rdx\n\t"       // RDX = 0
+        "pushq $0x1F80\n\t"          // push MXCSR value
+        "ldmxcsr (%%rsp)\n\t"        // load MXCSR
+        "addq $8, %%rsp\n\t"         // clean stack
+        "pushq $0x202\n\t"           // push flags
+        "popfq\n\t"                  // set lower rFLAGS
+        "movq %1, %%rsp\n\t"         // set stack pointer
+        "jmp *%0"                    // jump to entry
+        :
+        : "r"(entry), "r"(argp) // inputs
+        : "rdx", "memory"             // clobbers
+    );
+    __builtin_unreachable();
+}
+
+void _PalSyscallHandlerSet(void (*handler)(void)) {
+    __UNUSED(handler);
+}
+
+bool _PalGetRuntimeEnable(void) {
+    return false;
+}
+#endif

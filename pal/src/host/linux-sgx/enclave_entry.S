@@ -62,6 +62,9 @@
     jmp \label_on_stack
 .endm
 
+#ifdef RUNTIME
+    .global .Lcssa0_ocall_eexit_prepare, .Lcssa0_ocall_eexit_done, .Lcssa0_ocall_return_after_stack_restore
+#endif 
 
     .global enclave_entry
     .type enclave_entry, @function
@@ -103,6 +106,11 @@ enclave_entry:
     #   RSI - pointer to ecall arguments
     #   RDX - exit target
     #   RCX - enclave base
+    #   R8  - event mask page if runtime is enabled, otherwise NULL
+#ifdef RUNTIME
+    # store event_mask for a different exception flow when runtime is enabled
+    movq %r8, %gs:SGX_EVENT_MASK
+#endif
 
     cmpq $ECALL_THREAD_RESET, %rdi
     je .Lcssa0_ecall_thread_reset
@@ -747,6 +755,23 @@ sgx_ocall:
 
 1:
     # there was no event, simply call _restore_sgx_context(uc, xsave_area)
+#ifdef RUNTIME
+    .extern _eswitch_sgx_context
+    # check and call _eswitch_sgx_context instead if runtime enabled
+    # _eswitch_sgx_context(uint64_t null1, uint64_t null2, sgx_cpu_context_t* uc,
+    #                               uint64_t null3, PAL_XREGS_STATE* xsave_area, bool to_runtime);
+    movq %gs:SGX_RUNTIME_SIZE, %rdi
+    cmpq $0, %rdi
+    je 3f
+    movq %rsp, %rdx
+    movq %rsp, %r8
+    addq $SGX_CPU_CONTEXT_SIZE, %R8
+    movq $1, %r9
+
+    jmp _eswitch_sgx_context
+3:
+#endif
+    
     movq %rsp, %rdi
 
     movq %rsp, %rsi

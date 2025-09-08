@@ -54,3 +54,6 @@ PalDebugLog
 PalGetPalPublicState
 PalGetLazyCommitPages
 PalFreeThenLazyReallocCommittedPages
+PalSyscallHandlerSet
+PalSwitchToUser
+PalGetRuntimeEnable

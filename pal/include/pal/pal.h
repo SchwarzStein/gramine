@@ -1049,4 +1049,20 @@ void PalGetLazyCommitPages(uintptr_t addr, size_t size, uint8_t* bitvector);
  */
 int PalFreeThenLazyReallocCommittedPages(void* addr, size_t size);
 
+#ifdef RUNTIME
+/*!
+ * \brief Register the syscall handler for runtime.
+ * \param   handler    The syscall handler address
+ *
+ * This API is used when runtime attribute is enabled
+ *
+ */
+
+void PalSyscallHandlerSet(void (*handler)(void));
+
+#include "elf/elf.h"
+noreturn void PalSwitchToUser(elf_addr_t entry, void* argp);
+
+bool PalGetRuntimeEnable(void);
+#endif
 #undef INSIDE_PAL_H

@@ -18,6 +18,7 @@ struct enclave_thread_map {
     unsigned int    tid;
     sgx_arch_tcs_t* tcs;
     PAL_HOST_TCB*   tcb;
+    uint64_t*       event_mask;
 };
 
 static struct enclave_thread_map* g_enclave_thread_map = NULL;
@@ -116,7 +117,30 @@ void collect_and_print_sgx_stats(void) {
     spinlock_unlock(&g_enclave_thread_map_lock);
 }
 
+#ifndef RUNTIME
 void pal_host_tcb_init(PAL_HOST_TCB* tcb, void* stack, void* alt_stack) {
+    tcb->self = tcb;
+    tcb->tcs = NULL;    /* initialized by child thread */
+    tcb->stack = stack;
+    tcb->alt_stack = alt_stack;
+
+    tcb->eenter_cnt       = 0;
+    tcb->eexit_cnt        = 0;
+    tcb->aex_cnt          = 0;
+    tcb->sync_signal_cnt  = 0;
+    tcb->async_signal_cnt = 0;
+    tcb->reset_stats      = false;
+
+    tcb->profile_sample_time = 0;
+
+    tcb->last_async_event = PAL_EVENT_NO_EVENT;
+
+}
+
+#else
+
+void pal_host_tcb_init(PAL_HOST_TCB* tcb, void* stack, void* alt_stack, bool runtime_enabled) {
+    tcb->runtime_enabled = runtime_enabled;
     tcb->self = tcb;
     tcb->tcs = NULL;    /* initialized by child thread */
     tcb->stack = stack;
@@ -134,6 +158,13 @@ void pal_host_tcb_init(PAL_HOST_TCB* tcb, void* stack, void* alt_stack) {
     tcb->last_async_event = PAL_EVENT_NO_EVENT;
 }
 
+void initialize_event_mask(unsigned int thread_num, void* event_mask_base) {
+    for (uint32_t i = 0; i < thread_num; i++) {
+        g_enclave_thread_map[i].event_mask = (uint64_t *)(event_mask_base + i * sizeof(uint64_t));
+    }
+}
+#endif
+
 int create_tcs_mapper(void* tcs_base, unsigned int thread_num) {
     sgx_arch_tcs_t* enclave_tcs = tcs_base;
 
@@ -146,6 +177,9 @@ int create_tcs_mapper(void* tcs_base, unsigned int thread_num) {
         g_enclave_thread_map[i].tid = 0;
         g_enclave_thread_map[i].tcs = &enclave_tcs[i];
         g_enclave_thread_map[i].tcb = NULL;
+#ifdef RUNTIME
+        g_enclave_thread_map[i].event_mask = NULL;
+#endif
     }
     g_enclave_thread_num = thread_num;
     return 0;
@@ -216,6 +250,9 @@ static void map_tcs(unsigned int tid, PAL_HOST_TCB* tcb) {
             if (!g_enclave_thread_map[i].tid) {
                 g_enclave_thread_map[i].tid = tid;
                 g_enclave_thread_map[i].tcb = tcb;
+#ifdef RUNTIME
+                tcb->event_mask = g_enclave_thread_map[i].event_mask;
+#endif
 
                 pal_get_host_tcb()->tcs = g_enclave_thread_map[i].tcs;
                 ((struct enclave_dbginfo*)DBGINFO_ADDR)->thread_tids[i] = tid;
@@ -254,6 +291,9 @@ void unmap_my_tcs(void) {
         }
     assert(i < g_enclave_thread_num);
     pal_get_host_tcb()->tcs = NULL;
+#ifdef RUNTIME
+    pal_get_host_tcb()->event_mask = NULL;
+#endif
     spinlock_unlock(&g_enclave_thread_map_lock);
 }
 
@@ -403,7 +443,11 @@ int clone_thread(void* dynamic_tcs) {
 
     /* initialize TCB at the top of the alternative stack */
     PAL_HOST_TCB* tcb = child_stack_top + ALT_STACK_SIZE - sizeof(PAL_HOST_TCB);
+#ifndef RUNTIME
     pal_host_tcb_init(tcb, stack, child_stack_top);
+#else
+    pal_host_tcb_init(tcb, stack, child_stack_top, pal_get_host_tcb()->runtime_enabled);
+#endif
 
     /* align child_stack to 16 */
     child_stack_top = ALIGN_DOWN_PTR(child_stack_top, 16);

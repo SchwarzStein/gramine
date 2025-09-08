@@ -92,6 +92,15 @@ static bool interrupted_in_aex_profiling(void) {
     return pal_get_host_tcb()->is_in_aex_profiling != 0;
 }
 
+#ifdef RUNTIME
+static void sgx_set_event(enum pal_event event) {
+    log_debug("sgx_set_event %d", event);
+    uint64_t * event_mask = pal_get_host_tcb()->event_mask;
+    *event_mask |= (1UL << event);
+    log_debug("current event_mask: %lx",*event_mask);
+}
+#endif
+
 static void handle_sync_signal(int signum, siginfo_t* info, struct ucontext* uc) {
     enum pal_event event = signal_to_pal_event(signum);
 
@@ -105,7 +114,17 @@ static void handle_sync_signal(int signum, siginfo_t* info, struct ucontext* uc)
     if (interrupted_in_enclave(uc)) {
         /* exception happened in app/LibOS/trusted PAL code, handle signal inside enclave */
         pal_get_host_tcb()->sync_signal_cnt++;
+#ifndef RUNTIME
         sgx_raise(event);
+#else
+        if (pal_get_host_tcb()->runtime_enabled) {
+            sgx_set_event(event);
+            log_debug("return to enclave");
+            return;
+        } else {
+            sgx_raise(event);
+        }
+#endif
         return;
     }
 
@@ -157,7 +176,16 @@ static void handle_async_signal(int signum, siginfo_t* info, struct ucontext* uc
         /* signal arrived while in app/LibOS/trusted PAL code or when handling another AEX, handle
          * signal inside enclave */
         pal_get_host_tcb()->async_signal_cnt++;
+#ifndef RUNTIME
         sgx_raise(event);
+#else
+        if (pal_get_host_tcb()->runtime_enabled) {
+            sgx_set_event(event);
+            return;
+        } else {
+            sgx_raise(event);
+        }  
+#endif
         return;
     }
 

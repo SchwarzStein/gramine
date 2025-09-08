@@ -20,6 +20,20 @@ __attribute__((noinline)) static void init_xsave_size_from_report(void) {
     init_xsave_size(report.body.attributes.xfrm);
 }
 
+#ifdef RUNTIME
+    static void init_event_mask_page(void) {
+        if (GET_ENCLAVE_TCB(runtime_size) > 0) {
+            // Try to visit the current mask page, the flow is:
+            // 1) trigger a #PF
+            // 2) Runtime handler raise the #PF to OS
+            // 3) OS sync the page and user call eresume
+            // 4) Runtime handler return to previous context
+            uint64_t event_mask = *(uint64_t *)GET_ENCLAVE_TCB(event_mask);
+            __UNUSED(event_mask);
+        }
+    }
+#endif
+
 /*
  * Called from enclave_entry.S to execute ecalls.
  *
@@ -91,6 +105,9 @@ void handle_ecall(long ecall_index, void* ecall_args, void* exit_target, void* e
 
         /* xsave size must be initialized early, from a trusted source (EREPORT result) */
         init_xsave_size_from_report();
+#ifdef RUNTIME
+        init_event_mask_page();
+#endif
 
         /* pal_linux_main is responsible for checking the passed arguments */
         pal_linux_main(COPY_UNTRUSTED_VALUE(&start_args->libpal_uri),

@@ -19,6 +19,9 @@
 #include "pal_internal.h"
 #include "pal_linux.h"
 #include "pal_sgx.h"
+#ifdef RUNTIME
+#include "pal_tcb.h"
+#endif
 
 #define ADDR_IN_PAL(addr) ((void*)(addr) > TEXT_START && (void*)(addr) < TEXT_END)
 
@@ -61,6 +64,46 @@ noreturn static void restore_pal_context(sgx_cpu_context_t* uc, PAL_CONTEXT* ctx
 
     restore_sgx_context(uc, ctx->is_fpregs_used ? ctx->fpregs : NULL);
 }
+
+#ifdef RUNTIME
+__attribute_no_sanitize_address
+noreturn static void eswitch_sgx_context(sgx_cpu_context_t* uc, PAL_XREGS_STATE* xregs_state, bool to_runtime) {
+    if (xregs_state == NULL)
+        xregs_state = (PAL_XREGS_STATE*)g_xsave_reset_state;
+
+#ifdef ASAN
+    /* Unpoison the signal stack before leaving it */
+    uintptr_t sig_stack_low = GET_ENCLAVE_TCB(sig_stack_low);
+    uintptr_t sig_stack_high = GET_ENCLAVE_TCB(sig_stack_high);
+    asan_unpoison_current_stack(sig_stack_low, sig_stack_high - sig_stack_low);
+#endif
+
+    _eswitch_sgx_context(0, 0, uc, 0, xregs_state, to_runtime);
+}
+
+noreturn static void eswitch_restore_context(sgx_cpu_context_t* uc, PAL_CONTEXT* ctx, bool to_runtime) {
+    uc->rax    = ctx->rax;
+    uc->rbx    = ctx->rbx;
+    uc->rcx    = ctx->rcx;
+    uc->rdx    = ctx->rdx;
+    uc->rsp    = ctx->rsp;
+    uc->rbp    = ctx->rbp;
+    uc->rsi    = ctx->rsi;
+    uc->rdi    = ctx->rdi;
+    uc->r8     = ctx->r8;
+    uc->r9     = ctx->r9;
+    uc->r10    = ctx->r10;
+    uc->r11    = ctx->r11;
+    uc->r12    = ctx->r12;
+    uc->r13    = ctx->r13;
+    uc->r14    = ctx->r14;
+    uc->r15    = ctx->r15;
+    uc->rflags = ctx->efl;
+    uc->rip    = ctx->rip;
+
+    eswitch_sgx_context(uc, ctx->is_fpregs_used ? ctx->fpregs : NULL, to_runtime);
+}
+#endif
 
 static void save_pal_context(PAL_CONTEXT* ctx, sgx_cpu_context_t* uc,
                              PAL_XREGS_STATE* xregs_state) {
@@ -575,3 +618,444 @@ propagate_memfault:;
 out:
     restore_pal_context(uc, &ctx);
 }
+
+
+
+#ifdef RUNTIME
+#define IS_BIT_SET(val, n)  (((val) >> (n)) & 1)
+#define IS_RIGHTMOST_ONE(val, n) \
+    (((val) & -(val)) == (1ULL << (n)))
+
+static void check_and_handle_event(uint64_t event_num_mask, int event_num, sgx_cpu_context_t* uc, 
+                                    uintptr_t addr, PAL_CONTEXT* ctx, bool from_runtime) {
+    if (IS_BIT_SET(event_num_mask, event_num)) {
+        pal_event_handler_t upcall = _PalGetExceptionHandler(event_num);
+        if (upcall) {
+            if (!from_runtime) {
+                if (IS_RIGHTMOST_ONE(event_num_mask, event_num)) {
+                    (*upcall)(ADDR_IN_PAL(uc->rip), addr, ctx);
+                } else {
+                    // If it is not the last signal, pretend the context is in PAL
+                    (*upcall)(true, addr, ctx);
+                }
+            } else {
+                (*upcall)(ADDR_IN_PAL(uc->rip), addr, ctx);
+            }
+        }
+    }
+}
+
+
+
+void _PalExceptionRTHandler(uint32_t trusted_exit_info_,
+                          uint64_t untrusted_external_event_mask, sgx_cpu_context_t* uc,
+                          PAL_XREGS_STATE* xregs_state, sgx_arch_exinfo_t* exinfo, 
+                          uint64_t from_runtime)
+{
+    assert(untrusted_external_event_mask > 0);
+    
+    //log_debug("_PalExceptionRTHandler untrusted_external_event_mask: %lx ", untrusted_external_event_mask);
+    sgx_arch_exit_info_t trusted_exit_info;
+    static_assert(sizeof(trusted_exit_info) == sizeof(trusted_exit_info_), "invalid size");
+    memcpy(&trusted_exit_info, &trusted_exit_info_, sizeof(trusted_exit_info));
+
+    // _PalExceptionHandler can handle only one signal each time, and because of the priority of 
+    // different signals, SIGTERM and SIGCONT can only be set when the context of the first signal stack
+    // is set up and clear the exit info, so when setting the second context, valid should be none.
+
+    // But for handling several signals together, these two signals can come with any exit info.
+
+    /*
+     * Intel SGX hardware exposes information on a HW exception in the EXITINFO struct.
+     * Host OS + Gramine's untrusted part of PAL deliver a SW signal. The SW signal can be a
+     * reaction to HW exception (synchronous signal) or a reaction to software events (asynchronous
+     * signal). For security, it is important to cross-check HW exception state vs SW signal state.
+     *
+     * The below table shows the cross checks. "yes" means allowed combination, "no" means
+     * prohibited combination (Gramine terminates). "yes*" means a special case of #PF, see comments
+     * below on #PF handling.
+     *
+     *   +-----------------------------+-----+-----+-----+-----+------------------+------------+
+     *   | HW exceptions (trusted) ->  |     | #DE |     |     |                  |            |
+     *   | --------------------------- |     | #MF |     | #GP | others           |   none     |
+     *   |  SW signals (untrusted) |   | #UD | #XM | #PF | #AC | (#BR,#DB,#BP,#CP)| (valid=0)  |
+     *   |                         v   |     |     |     |     |                  |            |
+     * --+-----------------------------+-----+-----+-----+-----+------------------+------------+
+     * s |                             |     |     |     |     |                  |            |
+     * y | PAL_EVENT_ILLEGAL           | yes | no  | no  | no  |                  |            |
+     * n |                             |     |     |     |     |                  |            |
+     * c +-----------------------------+-----+-----+-----+-----+        no        |    no      |
+     * h |                             |     |     |     |     |   (exceptions    | (malicious |
+     * r | PAL_EVENT_ARITHMETIC_ERROR  | no  | yes | no  | no  |    unsupported   |  host      |
+     * o |                             |     |     |     |     |    by Gramine)   |  injected  |
+     * n +-----------------------------+-----+-----+-----+-----+                  |  SW signal)|
+     * o |                             |     |     |     |     |                  |            |
+     * u | PAL_EVENT_MEMFAULT          | no  | no  |yes* | yes |                  |            |
+     * s |                             |     |     |     |     |                  |            |
+     * --+-----------------------------+-----+-----+-----+-----+------------------+------------+
+     *   |                             |                                                       |
+     * a | PAL_EVENT_QUIT              |                                                       |
+     * s |                             |                                                       |
+     * y +-----------------------------+                yes                                    +
+     * n |                             |                                                       |
+     * c | PAL_EVENT_INTERRUPTED       |                                                       |
+     *   |                             |                                                       |
+     * --+-----------------------------+------------------------------------------+------------+
+     */
+    bool is_synthetic_gp = false; /* IN/OUT/INS/OUTS instructions morph #UD into a synthetic #GP */
+
+    uint32_t event_num_mask = 0; /* illegal event */
+    PAL_CONTEXT ctx = { 0 };
+    uintptr_t addr = 0;
+    uint32_t sync_event_num = 0;
+
+    /* In old flow, when second signal come, the ip in the SSA[0] is modified, so the next handler will  */
+    /* not change the stored context for signal injection.                                               */
+    /* When calling the upcall, if the context is from user, only the last one is allowed to prepare for */
+    /* the signal frame.                                                                                 */   
+
+    if (!trusted_exit_info.valid 
+            && !IS_BIT_SET(untrusted_external_event_mask, PAL_EVENT_QUIT)
+            && !IS_BIT_SET(untrusted_external_event_mask, PAL_EVENT_INTERRUPTED)) {
+        /* corresponds to last column in the table above */
+        for (int i = 0; i < PAL_EVENT_NUM_BOUND; i++) {
+            if (IS_BIT_SET(untrusted_external_event_mask, i)) {
+                log_error("Host injected malicious signal %u", i);
+            }
+        }
+        _PalProcessExit(1);
+            
+    }
+    /* first handle async event then sync, emulate the old flow */
+    event_num_mask = untrusted_external_event_mask;
+    save_pal_context(&ctx, uc, xregs_state);
+    check_and_handle_event(event_num_mask, PAL_EVENT_INTERRUPTED, uc, addr, &ctx, from_runtime);
+    check_and_handle_event(event_num_mask, PAL_EVENT_QUIT, uc, addr, &ctx, from_runtime);
+
+    /* if no other event, restore the context*/
+    if (!trusted_exit_info.valid) {
+        goto restore_context;
+    }
+
+    /* from here exit_info is valid, and should remain only one event to be handle*/
+    int counter = 0;
+    uint32_t untrusted_external_event = 0;
+    for (int i = 1; i < PAL_EVENT_QUIT; i++) {
+        if (IS_BIT_SET(event_num_mask, i)) {
+            untrusted_external_event = i;
+            counter += 1;
+        }
+    }
+
+    if (counter > 1) {
+         log_error("Host inject multiple synchronous signals!");
+        _PalProcessExit(1);
+    } else if (counter == 0) {
+        /* no remaining event */
+        goto restore_context;
+    }
+
+    const char* exception_name = NULL;
+    switch (trusted_exit_info.vector) {
+        case SGX_EXCEPTION_VECTOR_UD:
+            if (untrusted_external_event != PAL_EVENT_ILLEGAL) {
+                log_error("Host reported mismatching signal (expected %u, got %u)",
+                            PAL_EVENT_ILLEGAL, untrusted_external_event);
+                _PalProcessExit(1);
+            }
+            int event_num_from_handle_ud;
+            if (handle_ud(uc, &event_num_from_handle_ud)) {
+                eswitch_sgx_context(uc, xregs_state, from_runtime);
+                /* UNREACHABLE */
+            }
+            assert(event_num_from_handle_ud == PAL_EVENT_ILLEGAL
+                    || event_num_from_handle_ud == PAL_EVENT_MEMFAULT);
+            if (event_num_from_handle_ud == PAL_EVENT_MEMFAULT) {
+                /* it's a #UD on IN/OUT/INS/OUTS instructions, morphed into a #GP in handle_ud()
+                    * logic: adjust exception info sent to LibOS to mimic a #GP (see code below) */
+                is_synthetic_gp = true;
+            }
+            sync_event_num = event_num_from_handle_ud;
+            break;
+        case SGX_EXCEPTION_VECTOR_DE:
+        case SGX_EXCEPTION_VECTOR_MF:
+        case SGX_EXCEPTION_VECTOR_XM:
+            if (untrusted_external_event != PAL_EVENT_ARITHMETIC_ERROR) {
+                log_error("Host reported mismatching signal (expected %u, got %u)",
+                              PAL_EVENT_ARITHMETIC_ERROR, untrusted_external_event);
+                _PalProcessExit(1);
+            }
+            sync_event_num = PAL_EVENT_ARITHMETIC_ERROR;
+            break;
+        case SGX_EXCEPTION_VECTOR_PF:
+        case SGX_EXCEPTION_VECTOR_GP:
+        case SGX_EXCEPTION_VECTOR_AC:
+            if (untrusted_external_event != PAL_EVENT_MEMFAULT) {
+                log_error("Host reported mismatching signal (expected %u, got %u)",
+                            PAL_EVENT_MEMFAULT, untrusted_external_event);
+                _PalProcessExit(1);
+            }
+            sync_event_num = PAL_EVENT_MEMFAULT;
+            break;
+        case SGX_EXCEPTION_VECTOR_BR:
+            exception_name = exception_name ? : "#BR";
+            /* fallthrough */
+        case SGX_EXCEPTION_VECTOR_DB:
+            exception_name = exception_name ? : "#DB";
+            /* fallthrough */
+        case SGX_EXCEPTION_VECTOR_BP:
+            exception_name = exception_name ? : "#BP";
+            /* fallthrough */
+        case SGX_EXCEPTION_VECTOR_CP:
+            exception_name = exception_name ? : "#CP";
+            /* fallthrough */
+        default:
+            log_error("Handling %s exceptions is currently unsupported by Gramine",
+                        exception_name ? : "[unknown]");
+            _PalProcessExit(1);
+            /* UNREACHABLE */
+    }
+
+    if (sync_event_num == 0 || sync_event_num >= PAL_EVENT_QUIT) {
+        log_error("Illegal exception reported: %d", sync_event_num);
+        _PalProcessExit(1);
+    }
+
+    bool memfault_with_edmm = !is_synthetic_gp && sync_event_num == PAL_EVENT_MEMFAULT &&
+                              g_pal_linuxsgx_state.edmm_enabled;
+
+    if (ADDR_IN_PAL(uc->rip) && !memfault_with_edmm) {
+        char buf[LOCATION_BUF_SIZE];
+        pal_describe_location(uc->rip, buf, sizeof(buf));
+
+        const char* event_name = pal_event_name(sync_event_num);
+        log_error("Unexpected %s occurred inside PAL (%s)", event_name, buf);
+
+        if (trusted_exit_info.valid) {
+            /* EXITINFO field: vector = exception number, exit_type = 0x3 for HW / 0x6 for SW */
+            log_debug("(SGX HW reported AEX vector 0x%x with exit_type = 0x%x)",
+                      trusted_exit_info.vector, trusted_exit_info.exit_type);
+        } else {
+            log_debug("(untrusted PAL sent PAL event 0x%x)", untrusted_external_event);
+        }
+
+        _PalProcessExit(1);
+    }
+
+    bool has_hw_fault_address = false;
+
+    if (trusted_exit_info.valid) {
+        ctx.trapno = trusted_exit_info.vector;
+        /* Only these two exceptions save information in EXINFO. */
+        if (!is_synthetic_gp && (trusted_exit_info.vector == SGX_EXCEPTION_VECTOR_GP
+                || trusted_exit_info.vector == SGX_EXCEPTION_VECTOR_PF)) {
+            ctx.err = exinfo->error_code_val; /* bits: Present, Write/Read, User/Kernel, etc. */
+            ctx.cr2 = exinfo->maddr;          /* NOTE: on #GP, maddr = 0 */
+            has_hw_fault_address = true;
+        }
+    }
+
+    switch (sync_event_num) {
+        case PAL_EVENT_ILLEGAL:
+            addr = uc->rip;
+            break;
+        case PAL_EVENT_MEMFAULT:
+            if (!has_hw_fault_address && !is_synthetic_gp
+                    && !g_pal_linuxsgx_state.memfaults_without_exinfo_allowed) {
+                log_error("Tried to handle a memory fault with no faulting address reported by "
+                          "SGX. Please consider enabling 'sgx.use_exinfo' in the manifest.");
+                _PalProcessExit(1);
+            }
+            addr = ctx.cr2;
+            break;
+        default:
+            break;
+    }
+
+    if (memfault_with_edmm) {
+        /* EDMM lazy allocation */
+        assert(g_mem_bkeep_get_vma_info_upcall);
+
+        assert(ctx.err);
+
+#ifndef LINUX_KERNEL_SGX_EDMM_DATA_RACES_PATCHED
+        if (!(ctx.err & ERRCD_P) && is_eaccept_instr(uc)) {
+            /*
+             * Corner case of a #PF on a non-present page during EACCEPT: this is a benign spurious
+             * #PF that will be resolved completely by the host kernel.
+             *
+             * This is due to a data race in the SGX driver where two enclave threads may try to
+             * access the same non-present enclave page simultaneously, see below for details:
+             * https://lore.kernel.org/lkml/20240429104330.3636113-2-dmitrii.kuvaiskii@intel.com.
+             *
+             * TODO: remove this workaround once the Linux kernel is patched.
+             */
+            goto restore_context;
+        }
+#endif
+
+        pal_prot_flags_t prot_flags;
+
+        if (g_mem_bkeep_get_vma_info_upcall(addr, &prot_flags) == 0) {
+            prot_flags &= ~PAL_PROT_LAZYALLOC;
+
+            if (((ctx.err & ERRCD_W) && !(prot_flags & PAL_PROT_WRITE)) ||
+                ((ctx.err & ERRCD_I) && !(prot_flags & PAL_PROT_EXEC)) ||
+                /* This checks insufficient read access, e.g., reading a `PROT_NONE` page or the
+                 * eXecute-Only-Memory (XOM) (specified with `PROT_EXEC` alone). Note that on Linux,
+                 * `PROT_READ` is not required to be set when `PROT_WRITE` or `PROT_EXEC` are set.
+                 * Since we're in SGX EDMM PAL, a memfault is propagated when reading the XOM. */
+                (!(ctx.err & ERRCD_W) && !(ctx.err & ERRCD_I) && !(prot_flags & PAL_PROT_READ)) ||
+                (ctx.err & ERRCD_PK) || (ctx.err & ERRCD_SS)) {
+                /* the memfault can be caused by e.g. insufficient access rights rather than page
+                 * not existing, which should be propagated in this case */
+                goto call_upcall_handler;
+            }
+
+            /* The page's set/unset status will be double-checked against the status recorded in the
+             * enclave page tracker, and if it has already been committed, the page will be skipped.
+             * See `walk_pages()` in "pal/src/host/linux-sgx/enclave_edmm.c" for details.
+             *
+             * This avoids a potential security issue where a malicious host could trick us into
+             * committing the page twice (which would effectively allow the host to replace a
+             * lazily-allocated page with 0s) by removing the page and forcing a page fault. */
+            int ret = commit_lazy_alloc_pages(ALLOC_ALIGN_DOWN_PTR(addr), /*count=*/1, prot_flags);
+            if (ret < 0) {
+                log_error("failed to lazily allocate page at 0x%lx: %s", addr, pal_strerror(ret));
+                _PalProcessExit(1);
+            }
+            goto restore_context;
+        } else if (ADDR_IN_PAL(uc->rip)) {
+            /* inside PAL, and we failed to get the VMA info of the faulting address or we hit a
+             * memfault on a not lazily-allocated page */
+            char buf[LOCATION_BUF_SIZE];
+            pal_describe_location(uc->rip, buf, sizeof(buf));
+
+            log_error("Unexpected memory fault occurred inside PAL (%s)", buf);
+            _PalProcessExit(1);
+        }
+
+        /* propagate the unhandled memfaults to LibOS via upcall */
+    }
+call_upcall_handler:
+    pal_event_handler_t upcall = _PalGetExceptionHandler(sync_event_num);
+    if (upcall) {
+        (*upcall)(ADDR_IN_PAL(uc->rip), addr, &ctx);
+    }
+restore_context:
+    eswitch_restore_context(uc, &ctx, from_runtime);
+}
+
+void _PalExceptionRTInternalHandler(uint32_t trusted_exit_info_,
+                          uint64_t untrusted_external_event_mask, sgx_cpu_context_t* uc,
+                          PAL_XREGS_STATE* xregs_state, sgx_arch_exinfo_t* exinfo, 
+                          uint64_t from_runtime)
+{
+    __UNUSED(untrusted_external_event_mask);
+    sgx_arch_exit_info_t trusted_exit_info;
+    static_assert(sizeof(trusted_exit_info) == sizeof(trusted_exit_info_), "invalid size");
+    memcpy(&trusted_exit_info, &trusted_exit_info_, sizeof(trusted_exit_info));
+    /* if no other event, restore the context*/
+    if (!trusted_exit_info.valid) {
+        log_error("InternalHandler should handle only valid exception!");
+        _PalProcessExit(1);
+    }
+
+    log_debug("_PalExceptionRTInternalHandler get internal error %d", trusted_exit_info.vector);
+    bool is_synthetic_gp = false; /* IN/OUT/INS/OUTS instructions morph #UD into a synthetic #GP */
+    const char* exception_name = NULL;
+    uintptr_t addr = 0;
+    uint32_t sync_event_num = 0;
+    PAL_CONTEXT ctx = { 0 };
+    save_pal_context(&ctx, uc, xregs_state);
+
+    switch (trusted_exit_info.vector) {
+        case SGX_EXCEPTION_VECTOR_UD:
+            int event_num_from_handle_ud;
+            if (handle_ud(uc, &event_num_from_handle_ud)) {
+                eswitch_sgx_context(uc, xregs_state, from_runtime);
+                /* UNREACHABLE */
+            }
+            assert(event_num_from_handle_ud == PAL_EVENT_ILLEGAL
+                    || event_num_from_handle_ud == PAL_EVENT_MEMFAULT);
+            if (event_num_from_handle_ud == PAL_EVENT_MEMFAULT) {
+                /* it's a #UD on IN/OUT/INS/OUTS instructions, morphed into a #GP in handle_ud()
+                    * logic: adjust exception info sent to LibOS to mimic a #GP (see code below) */
+                is_synthetic_gp = true;
+            }
+            sync_event_num = event_num_from_handle_ud;
+            break;
+        case SGX_EXCEPTION_VECTOR_DE:
+        case SGX_EXCEPTION_VECTOR_MF:
+        case SGX_EXCEPTION_VECTOR_XM:
+            sync_event_num = PAL_EVENT_ARITHMETIC_ERROR;
+            break;
+        case SGX_EXCEPTION_VECTOR_PF:
+        case SGX_EXCEPTION_VECTOR_GP:
+        case SGX_EXCEPTION_VECTOR_AC:
+            sync_event_num = PAL_EVENT_MEMFAULT;
+            break;
+        case SGX_EXCEPTION_VECTOR_BR:
+            exception_name = exception_name ? : "#BR";
+            /* fallthrough */
+        case SGX_EXCEPTION_VECTOR_DB:
+            exception_name = exception_name ? : "#DB";
+            /* fallthrough */
+        case SGX_EXCEPTION_VECTOR_BP:
+            exception_name = exception_name ? : "#BP";
+            /* fallthrough */
+        case SGX_EXCEPTION_VECTOR_CP:
+            exception_name = exception_name ? : "#CP";
+            /* fallthrough */
+        default:
+            log_error("Handling %s exceptions is currently unsupported by Gramine",
+                        exception_name ? : "[unknown]");
+            _PalProcessExit(1);
+            /* UNREACHABLE */
+    }
+
+    if (sync_event_num == 0 || sync_event_num >= PAL_EVENT_QUIT) {
+        log_error("Illegal exception reported: %d", sync_event_num);
+        _PalProcessExit(1);
+    }
+
+    if (ADDR_IN_PAL(uc->rip)) {
+        char buf[LOCATION_BUF_SIZE];
+        pal_describe_location(uc->rip, buf, sizeof(buf));
+
+        const char* event_name = pal_event_name(sync_event_num);
+        log_error("Unexpected %s occurred inside PAL (%s)", event_name, buf);
+
+        if (trusted_exit_info.valid) {
+            /* EXITINFO field: vector = exception number, exit_type = 0x3 for HW / 0x6 for SW */
+            log_debug("(SGX HW reported AEX vector 0x%x with exit_type = 0x%x)",
+                      trusted_exit_info.vector, trusted_exit_info.exit_type);
+        }
+
+        _PalProcessExit(1);
+    }
+
+    ctx.trapno = trusted_exit_info.vector;
+    /* Only these two exceptions save information in EXINFO. */
+    if (!is_synthetic_gp && (trusted_exit_info.vector == SGX_EXCEPTION_VECTOR_GP
+            || trusted_exit_info.vector == SGX_EXCEPTION_VECTOR_PF)) {
+        ctx.err = exinfo->error_code_val; /* bits: Present, Write/Read, User/Kernel, etc. */
+        ctx.cr2 = exinfo->maddr;          /* NOTE: on #GP, maddr = 0 */
+    }
+    
+    switch (sync_event_num) {
+        case PAL_EVENT_ILLEGAL:
+            addr = uc->rip;
+            break;
+        default:
+            break;
+    }
+
+    pal_event_handler_t upcall = _PalGetExceptionHandler(sync_event_num);
+    if (upcall) {
+        (*upcall)(ADDR_IN_PAL(uc->rip), addr, &ctx);
+    }
+
+    eswitch_restore_context(uc, &ctx, from_runtime);
+}
+#endif

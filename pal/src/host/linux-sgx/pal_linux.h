@@ -95,6 +95,24 @@ void _PalExceptionHandler(uint32_t trusted_exit_info_,
                           uint32_t untrusted_external_event, sgx_cpu_context_t* uc,
                           PAL_XREGS_STATE* xregs_state, sgx_arch_exinfo_t* exinfo);
 
+#ifdef RUNTIME
+void _PalExceptionRTHandler(uint32_t trusted_exit_info_,
+                          uint64_t untrusted_external_event_mask, sgx_cpu_context_t* uc,
+                          PAL_XREGS_STATE* xregs_state, sgx_arch_exinfo_t* exinfo, 
+                          uint64_t from_runtime);
+void _PalExceptionRTInternalHandler(uint32_t trusted_exit_info_,
+                          uint64_t untrusted_external_event_mask, sgx_cpu_context_t* uc,
+                          PAL_XREGS_STATE* xregs_state, sgx_arch_exinfo_t* exinfo, 
+                          uint64_t from_runtime);
+/*
+ * MOVSB need to reset RDI RSI and RCX, so keep these field null
+ */
+noreturn void _eswitch_sgx_context(uint64_t null1, uint64_t null2, sgx_cpu_context_t* uc,
+                                   uint64_t null3, PAL_XREGS_STATE* xsave_area, bool to_runtime);
+noreturn void _eswitch_to_user(elf_addr_t entry, void* argp);
+
+#endif
+
 void init_tsc(void);
 
 int init_cpuid(void);

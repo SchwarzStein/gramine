@@ -67,3 +67,17 @@ int PalFreeThenLazyReallocCommittedPages(void* addr, size_t size) {
 
     return _PalFreeThenLazyReallocCommittedPages(addr, size);
 }
+
+#ifdef RUNTIME
+noreturn void PalSwitchToUser(elf_addr_t entry, void* argp) {
+    _PalSwitchToUser(entry, argp);
+}
+
+void PalSyscallHandlerSet(void (*handler)(void)) {
+    return _PalSyscallHandlerSet(handler);
+}
+
+bool PalGetRuntimeEnable(void) {
+    return _PalGetRuntimeEnable();
+}
+#endif

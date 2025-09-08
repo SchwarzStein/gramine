@@ -50,6 +50,11 @@ sgx_ecall:
     # RBX has to be the TCS of the thread
     movq %gs:PAL_HOST_TCB_TCS, %rbx
 
+#ifdef RUNTIME
+    # Set untrusted event mask address for further exception handling
+    # R8 is null if runtime is not enabled
+    movq %gs:PAL_HOST_TCB_EVENT_MASK, %r8 
+#endif
     # RCX has to be the AEP (Asynchronous Exit Pointer)
     leaq async_exit_pointer(%rip), %rcx
 

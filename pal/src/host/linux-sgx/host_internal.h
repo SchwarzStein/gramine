@@ -117,6 +117,9 @@ void async_exit_pointer_end(void);
 int get_tid_from_tcs(void* tcs);
 int clone_thread(void* dynamic_tcs);
 
+#ifdef RUNTIME
+void initialize_event_mask(unsigned int thread_num, void* event_mask_base);
+#endif
 int create_tcs_mapper(void* tcs_base, unsigned int thread_num);
 int pal_thread_init(void* tcbptr);
 void unmap_my_tcs(void);

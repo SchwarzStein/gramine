@@ -28,6 +28,8 @@ struct pal_enclave_tcb {
 #ifdef RUNTIME
     uint64_t  runtime_size;
     void*     ussa;
+    sgx_pal_gpr_t* ugpr;
+    void*     event_mask; // Checked during exception handling flow, not trusted
 #endif
     uint64_t  tcs_offset;
     uint64_t  initial_stack_addr;
@@ -106,9 +108,17 @@ typedef struct pal_host_tcb {
     int32_t last_async_event;      /* last async signal, reported to the enclave on ocall return */
     int* start_status_ptr;         /* pointer to return value of clone_thread */
     bool reset_stats;              /* if true, dump SGX stats and reset them on next AEX/OCALL */
+#ifdef RUNTIME
+    bool runtime_enabled;          /* if true, the runtime attribute is enable in enclave*/
+    void* event_mask;
+#endif
 } PAL_HOST_TCB;
 
+#ifndef RUNTIME
 extern void pal_host_tcb_init(PAL_HOST_TCB* tcb, void* stack, void* alt_stack);
+#else
+extern void pal_host_tcb_init(PAL_HOST_TCB* tcb, void* stack, void* alt_stack, bool runtime_enabled);
+#endif
 
 static inline PAL_HOST_TCB* pal_get_host_tcb(void) {
     PAL_HOST_TCB* tcb;

@@ -74,6 +74,78 @@ static int load_elf_headers(int fd, elf_ehdr_t* out_ehdr, elf_phdr_t** out_phdr)
     *out_phdr = phdr;
     return 0;
 }
+#ifdef RUNTIME
+
+static int find_static_string_and_symbol_tables(elf_addr_t ehdr_addr, const char** out_string_table, 
+                                    elf_sym_t** out_symbol_table, uint32_t* out_symbol_table_cnt) {
+    uint32_t symbol_table_cnt = 0;
+    Elf64_Shdr *symtab_hdr = NULL;
+    Elf64_Shdr *strtab_hdr = NULL;
+
+    elf_ehdr_t* header = (elf_ehdr_t*)ehdr_addr;
+    Elf64_Shdr* shdr   = (Elf64_Shdr*)(ehdr_addr + header->e_shoff);
+    Elf64_Shdr sh_str = shdr[header->e_shstrndx];
+    char *sh_strtab = (char *)(ehdr_addr + sh_str.sh_offset);
+
+    for (int i = 0; i < header->e_shnum; i++) {
+        const char *name = sh_strtab + shdr[i].sh_name;
+        if (strcmp(name, ".symtab") == 0) {
+            symtab_hdr = &shdr[i];
+        } else if (strcmp(name, ".strtab") == 0) {
+            strtab_hdr = &shdr[i];
+        }
+    }
+    if (!symtab_hdr || !strtab_hdr) {
+        log_error("Loaded binary doesn't have symtab and strtab section (required for symbol resolution)");
+        return -1;
+    }
+
+    symbol_table_cnt = strtab_hdr->sh_size / sizeof(Elf64_Sym);
+    
+    *out_string_table     = (char *)(ehdr_addr + strtab_hdr->sh_offset);
+    *out_symbol_table     = (elf_sym_t *)(ehdr_addr + symtab_hdr->sh_offset);
+    *out_symbol_table_cnt = symbol_table_cnt;
+    return 0;
+}
+
+static uint64_t get_handler_addr(int fd) {
+    uint64_t handler_addr = 0;
+    const char* string_table  = NULL;
+    elf_sym_t* symbol_table = NULL;
+    uint32_t symbol_table_cnt = 0;
+    int ret;
+    struct stat st;
+
+    if (DO_SYSCALL(fstat, fd, &st) < 0) {
+        log_error("fstat");
+        return 0;
+    }
+
+    void *map = (void*)DO_SYSCALL(mmap, NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (map == (void *)-1) {
+        log_error("mmap");
+        return 0;
+    }
+
+    ret = find_static_string_and_symbol_tables((elf_addr_t)map, &string_table, &symbol_table,
+                                        &symbol_table_cnt);
+    if (ret < 0) {
+        log_error("Cannot find string and symbol tables for parsing handler address!");
+        DO_SYSCALL(munmap, map, st.st_size);
+        return 0;
+    }
+
+    for (uint32_t i = 0; i < symbol_table_cnt; i++) {
+        const char* symbol_name = string_table + symbol_table[i].st_name;
+        if (!strcmp("entry_handler_default", symbol_name)) {
+            handler_addr = symbol_table[i].st_value;
+            break;
+        }
+    }
+    DO_SYSCALL(munmap, map, st.st_size);
+    return handler_addr;
+}
+#endif
 
 static int scan_enclave_binary(int fd, unsigned long* base, unsigned long* size,
                                unsigned long* entry) {
@@ -115,7 +187,11 @@ out:
 }
 
 static int load_enclave_binary(sgx_arch_secs_t* secs, int fd, unsigned long base,
+#ifndef RUNTIME
                                unsigned long prot) {
+#else
+                               unsigned long prot, bool runtime_enable) {
+#endif
     int ret;
     elf_ehdr_t ehdr;
     elf_phdr_t* phdr;
@@ -132,6 +208,14 @@ static int load_enclave_binary(sgx_arch_secs_t* secs, int fd, unsigned long base
     int nloadcmds = 0;
 
     elf_phdr_t* ph;
+#ifdef RUNTIME
+    uint64_t handler_addr;
+    if (runtime_enable) {
+        handler_addr = get_handler_addr(fd);
+        assert(handler_addr > 0);
+        assert(handler_addr % 0x1000 == 0);
+    }
+#endif
     for (ph = phdr; ph < &phdr[ehdr.e_phnum]; ph++)
         if (ph->p_type == PT_LOAD) {
             if (nloadcmds == 16) {
@@ -139,6 +223,48 @@ static int load_enclave_binary(sgx_arch_secs_t* secs, int fd, unsigned long base
                 goto out;
             }
 
+#ifdef RUNTIME
+            if (runtime_enable && handler_addr >= ALLOC_ALIGN_DOWN(ph->p_vaddr)
+                    && handler_addr < ALLOC_ALIGN_UP(ph->p_vaddr + ph->p_filesz)) {
+                if (handler_addr > ph->p_vaddr) {
+                    c = &loadcmds[nloadcmds++];
+                    c->mapstart  = ALLOC_ALIGN_DOWN(ph->p_vaddr);
+                    c->mapend    = handler_addr;
+                    c->datastart = ph->p_vaddr;
+                    c->dataend   = handler_addr;
+                    c->allocend  = handler_addr;
+                    c->mapoff    = ALLOC_ALIGN_DOWN(ph->p_offset);
+                    c->prot = (ph->p_flags & PF_R ? PROT_READ : 0) |
+                            (ph->p_flags & PF_W ? PROT_WRITE : 0) |
+                            (ph->p_flags & PF_X ? PROT_EXEC : 0) | prot;
+                }
+                /* handler page */
+                c = &loadcmds[nloadcmds++];
+                c->mapstart  = handler_addr;
+                c->mapend    = c->mapstart + 0x1000;
+                c->datastart = handler_addr;
+                c->dataend   = handler_addr + 0x1000;
+                c->allocend  = handler_addr + 0x1000;
+                c->mapoff    = ALLOC_ALIGN_DOWN(ph->p_offset) + (handler_addr - ALLOC_ALIGN_DOWN(ph->p_vaddr));
+                c->prot = (ph->p_flags & PF_R ? PROT_READ : 0) |
+                        (ph->p_flags & PF_W ? PROT_WRITE : 0) |
+                        (ph->p_flags & PF_X ? PROT_EXEC : 0) | prot;
+
+                if (handler_addr + 0x1000 < ph->p_vaddr + ph->p_memsz) {
+                    c = &loadcmds[nloadcmds++];
+                    c->mapstart  = handler_addr + 0x1000;
+                    c->mapend    = ALLOC_ALIGN_UP(ph->p_vaddr + ph->p_memsz);
+                    c->datastart = handler_addr + 0x1000;
+                    c->dataend   = ph->p_vaddr + ph->p_filesz;
+                    c->allocend  = ph->p_vaddr + ph->p_memsz;
+                    c->mapoff    = ALLOC_ALIGN_DOWN(ph->p_offset) + (c->datastart - ALLOC_ALIGN_DOWN(ph->p_vaddr));
+                    c->prot = (ph->p_flags & PF_R ? PROT_READ : 0) |
+                            (ph->p_flags & PF_W ? PROT_WRITE : 0) |
+                            (ph->p_flags & PF_X ? PROT_EXEC : 0) | prot;
+                }
+                continue;
+            }
+#endif
             c = &loadcmds[nloadcmds++];
             c->mapstart  = ALLOC_ALIGN_DOWN(ph->p_vaddr);
             c->mapend    = ALLOC_ALIGN_UP(ph->p_vaddr + ph->p_filesz);
@@ -174,10 +300,24 @@ static int load_enclave_binary(sgx_arch_secs_t* secs, int fd, unsigned long base
             if (zeropage > zero)
                 memset(addr + zero - c->mapstart, 0, zeropage - zero);
 
+#ifdef RUNTIME
+            if (runtime_enable && c->mapstart == handler_addr) {
+                ret = add_pages_to_enclave(secs, (void*)base + c->mapstart, addr,
+                                       c->mapend - c->mapstart,
+                                       SGX_PAGE_TYPE_HANDLER, c->prot, /*skip_eextend=*/false,
+                                       "handler");
+            } else {
+                ret = add_pages_to_enclave(secs, (void*)base + c->mapstart, addr,
+                                       c->mapend - c->mapstart,
+                                       SGX_PAGE_TYPE_REG, c->prot, /*skip_eextend=*/false,
+                                       (c->prot & PROT_EXEC) ? "code" : "data");
+            }
+#else
             ret = add_pages_to_enclave(secs, (void*)base + c->mapstart, addr,
                                        c->mapend - c->mapstart,
                                        SGX_PAGE_TYPE_REG, c->prot, /*skip_eextend=*/false,
                                        (c->prot & PROT_EXEC) ? "code" : "data");
+#endif
 
             DO_SYSCALL(munmap, addr, c->mapend - c->mapstart);
 
@@ -336,9 +476,6 @@ static int initialize_enclave(struct pal_enclave* enclave, const char* manifest_
             BUF,
             TCS,
             TLS,
-#ifdef RUNTIME
-            HANDLER,
-#endif
         } data_src;
         union {
             int fd; // valid iff data_src == ELF_FD
@@ -403,8 +540,7 @@ static int initialize_enclave(struct pal_enclave* enclave, const char* manifest_
                           .skip_eextend = false,
                           .data_src     = ZERO,
                           .addr         = 0,
-                          .size         = enclave->thread_num * enclave->ssa_frame_size *
-                                              SSA_FRAME_NUM,
+                          .size         = enclave->thread_num * enclave->ssa_frame_size,
                           .prot         = PROT_READ | PROT_WRITE,
                           .type         = SGX_PAGE_TYPE_REG};
         ussa_area = &areas[area_num++];
@@ -452,19 +588,6 @@ static int initialize_enclave(struct pal_enclave* enclave, const char* manifest_
         area_num++;
     }
 
-#ifdef RUNTIME
-    if (enclave->runtime_enable) {
-        areas[area_num] = (struct mem_area){.desc = "handler",
-                                            .skip_eextend = false,
-                                            .data_src     = HANDLER,
-                                            .addr         = 0,
-                                            .size         = g_page_size,
-                                            .prot         = 0,
-                                            .type         = SGX_PAGE_TYPE_HANDLER};
-        area_num++;
-    }
-#endif
-
     areas[area_num] = (struct mem_area){.desc         = "pal",
                                         .skip_eextend = false,
                                         .data_src     = ELF_FD,
@@ -509,7 +632,11 @@ static int initialize_enclave(struct pal_enclave* enclave, const char* manifest_
     log_debug("Adding pages to SGX enclave, this may take some time...");
     for (int i = 0; i < area_num; i++) {
         if (areas[i].data_src == ELF_FD) {
+#ifndef RUNTIME
             ret = load_enclave_binary(&enclave_secs, areas[i].fd, areas[i].addr, areas[i].prot);
+#else
+            ret = load_enclave_binary(&enclave_secs, areas[i].fd, areas[i].addr, areas[i].prot, enclave->runtime_enable);
+#endif
             if (ret < 0) {
                 log_error("Loading enclave binary failed: %s", unix_strerror(ret));
                 goto out;
@@ -544,9 +671,10 @@ static int initialize_enclave(struct pal_enclave* enclave, const char* manifest_
                 gs->common.stack_protector_canary = STACK_PROTECTOR_CANARY_DEFAULT;
                 gs->enclave_size = enclave->size;
 #ifdef RUNTIME
-if (enclave->runtime_enable) {
+        if (enclave->runtime_enable) {
                 gs->runtime_size = enclave->runtime_size;
-                gs->ussa = (void*)ussa_area->addr + enclave->ssa_frame_size * SSA_FRAME_NUM * t;
+                gs->ussa = (void*)ussa_area->addr + enclave->ssa_frame_size * t;
+                gs->ugpr = gs->ussa + enclave->ssa_frame_size - sizeof(sgx_pal_gpr_t);
 }
 #endif
                 gs->tcs_offset = tcs_area->addr - enclave->baseaddr + g_page_size * t;
@@ -575,19 +703,13 @@ if (enclave->runtime_enable) {
                 tcs->ogs_limit = 0xfff;
                 tcs_addrs[t] = (void*)tcs_area->addr + g_page_size * t;
 #ifdef RUNTIME
-if (enclave->runtime_enable)
+            if (enclave->runtime_enable)
                 tcs->oussa      = ussa_area->addr - enclave->baseaddr
-                                 + enclave->ssa_frame_size * SSA_FRAME_NUM * t;
+                                 + enclave->ssa_frame_size * t;
 #endif
             }
         } else if (areas[i].data_src == BUF) {
             memcpy(data, areas[i].buf, areas[i].buf_size);
-#ifdef RUNTIME
-        } else if (areas[i].data_src == HANDLER) {
-            //TODO: add handler address in the page
-            void* handler = data;
-            memset(handler, 0, g_page_size);
-#endif
         } else {
             assert(areas[i].data_src == ZERO);
         }
@@ -619,6 +741,20 @@ if (enclave->runtime_enable)
         goto out;
     }
 
+#ifdef RUNTIME
+    if (enclave->runtime_enable) {
+        assert(enclave->thread_num <= PAGE_SIZE / sizeof(uint64_t));
+        uint64_t * event_mask_page = (uint64_t *)DO_SYSCALL(mmap, NULL, PAGE_SIZE, PROT_READ | PROT_WRITE,
+                                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_LOCKED, -1, 0);
+        if (IS_PTR_ERR(event_mask_page)) {
+            log_error("Cannot allocate event_mask for each thread");
+            ret = -ENOMEM;
+            goto out;
+        }
+        
+        initialize_event_mask(enclave->thread_num, event_mask_page);
+    }
+#endif
     struct enclave_dbginfo* dbg = (void*)DO_SYSCALL(mmap, DBGINFO_ADDR,
                                                     sizeof(struct enclave_dbginfo),
                                                     PROT_READ | PROT_WRITE,
@@ -1107,7 +1243,11 @@ static int load_enclave(struct pal_enclave* enclave, char* args, size_t args_siz
     /* initialize TCB at the top of the alternative stack */
     PAL_HOST_TCB* tcb = alt_stack + ALT_STACK_SIZE - sizeof(PAL_HOST_TCB);
     /* main thread uses the stack provided by Linux */
+#ifndef RUNTIME 
     pal_host_tcb_init(tcb, /*stack=*/NULL, alt_stack);
+#else
+    pal_host_tcb_init(tcb, /*stack=*/NULL, alt_stack, enclave->runtime_enable);
+#endif
     ret = pal_thread_init(tcb);
     if (ret < 0)
         return ret;

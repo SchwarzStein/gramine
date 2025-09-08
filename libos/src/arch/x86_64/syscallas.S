@@ -210,6 +210,7 @@ Lmorestack_for_gdb_bt:
 .size __morestack, .-__morestack
 #endif
 
+#ifndef RUNTIME
 .global _return_from_syscall
 .type _return_from_syscall, @function
 _return_from_syscall:
@@ -273,3 +274,109 @@ _return_from_syscall:
 
     .cfi_endproc
 .size _return_from_syscall, .-_return_from_syscall
+
+#else
+
+.global _return_from_syscall
+.type _return_from_syscall, @function
+_return_from_syscall:
+    # `rdi` - pointer to PAL_CONTEXT
+    # 'rsi' - runtime_enable
+    .cfi_startproc
+
+    mov %rdi, %rbx
+
+    movb PAL_CONTEXT_FPREGS_USED_OFF(%rbx), %al
+    test %al, %al
+    jne .Lrestore_xstate
+
+    # restore FP Control Word & MXCSR from TCB
+    fldcw PAL_CONTEXT_FPCW_OFF(%rbx)
+    ldmxcsr PAL_CONTEXT_MXCSR_OFF(%rbx)
+
+.Lrestore_context:
+    cmpq $0, %rsi
+    jne .Lrestore_context_runtime_enable
+
+.Lrestore_context_runtime_disable:
+    # After this line cfi will be broken, but we don't care much since this does not call anything
+    # and just restores the user context, so it will not be visible in any backtrace.
+    # Note that fixing it is not trivial - we would need the trick with `__morestack`, but we do not
+    # have neither a stack, nor a scratch register.
+    mov %rbx, %rsp
+
+    pop %r8
+    pop %r9
+    pop %r10
+    pop %r11
+    pop %r12
+    pop %r13
+    pop %r14
+    pop %r15
+    pop %rdi
+    pop %rsi
+    pop %rbp
+    pop %rbx
+    pop %rdx
+
+    # exchange rcx with rip
+    mov 0x8(%rsp), %rcx
+    mov 0x18(%rsp), %rax
+    mov %rcx, 0x18(%rsp)
+    mov %rax, 0x8(%rsp)
+    # exchange rsp with flags
+    mov 0x10(%rsp), %rcx
+    mov 0x20(%rsp), %rax
+    mov %rcx, 0x20(%rsp)
+    mov %rax, 0x10(%rsp)
+
+    pop %rax
+    pop %rcx # rip
+    popfq
+    mov %rcx, %gs:(LIBOS_TCB_OFF + LIBOS_TCB_SCRATCH_PC_OFF)
+    pop %rcx
+    pop %rsp
+    jmp *%gs:(LIBOS_TCB_OFF + LIBOS_TCB_SCRATCH_PC_OFF)
+
+.Lrestore_context_runtime_enable:
+    # After this line cfi will be broken, but we don't care much since this does not call anything
+    # and just restores the user context, so it will not be visible in any backtrace.
+    # Note that fixing it is not trivial - we would need the trick with `__morestack`, but we do not
+    # have neither a stack, nor a scratch register.
+    mov %rbx, %rsp
+
+    pop %r8
+    pop %r9
+    pop %r10
+    pop %r11
+    pop %r12
+    pop %r13
+    pop %r14
+    pop %r15
+    pop %rdi
+    pop %rsi
+    pop %rbp
+    pop %rbx
+    pop %rdx
+
+    # exchange rsp with flags
+    mov 0x10(%rsp), %rcx
+    mov 0x20(%rsp), %rax
+    mov %rcx, 0x20(%rsp)
+    mov %rax, 0x10(%rsp)
+
+    pop %rax
+    pop %rcx
+    pop %r11 # flags
+    pop %rcx # rip, rcx is clobbered in syscall
+    pop %rsp
+    sysretq
+
+.Lrestore_xstate:
+    mov PAL_CONTEXT_FPREGS_OFF(%rbx), %rdi
+    call libos_xstate_restore
+    jmp .Lrestore_context
+
+    .cfi_endproc
+.size _return_from_syscall, .-_return_from_syscall
+#endif

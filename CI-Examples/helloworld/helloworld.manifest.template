@@ -9,15 +9,18 @@ loader.log_level = "{{ log_level }}"
 loader.env.LD_LIBRARY_PATH = "/lib"
 
 fs.mounts = [
-  { path = "/lib", uri = "file:{{ gramine.runtimedir() }}" },
+  { path = "/lib/libc.so.6", uri = "file:/lib/x86_64-linux-gnu/libc.so.6" },
+  { path = "/lib/ld-linux-x86-64.so.2", uri = "file:/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2" },
   { path = "/helloworld", uri = "file:helloworld" },
 ]
 
 sgx.debug = true
-sgx.edmm_enable = {{ 'true' if env.get('EDMM', '0') == '1' else 'false' }}
+sgx.edmm_enable = true
 sgx.runtime_enable = true
+sgx.use_exinfo = true
 
 sgx.trusted_files = [
   "file:helloworld",
-  "file:{{ gramine.runtimedir() }}/",
+  "file:/lib/x86_64-linux-gnu/libc.so.6",
+  "file:/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
 ]

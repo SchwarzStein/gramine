@@ -136,17 +136,58 @@ PAGEINFO_TCS = 0x100
 PAGEINFO_REG = 0x200
 PAGEINFO_HANDLER = 0x700
 
-def get_loadcmds(elf_filename):
+def get_symaddr(elf_filename):
     with open(elf_filename, 'rb') as file:
-        for seg in elftools.elf.elffile.ELFFile(file).iter_segments():
+        elf = elftools.elf.elffile.ELFFile(file)
+        symtab = elf.get_section_by_name('.symtab')
+        sym_addr = 0
+        if symtab:
+            for sym in symtab.iter_symbols():
+                if sym.name == 'entry_handler_default':
+                    sym_addr = sym.entry['st_value']
+                    break
+        assert sym_addr > 0
+        return sym_addr
+
+def get_loadcmds(elf_filename, split_handler):
+    with open(elf_filename, 'rb') as file:
+        elf = elftools.elf.elffile.ELFFile(file)
+        if split_handler:
+            sym_addr = get_symaddr(elf_filename)
+
+        for seg in elf.iter_segments():
             if seg.header.p_type != 'PT_LOAD':
                 continue
-            yield (
-                seg.header.p_offset,
-                seg.header.p_vaddr,
-                seg.header.p_filesz,
-                seg.header.p_memsz,
-                seg.header.p_flags)
+
+            if split_handler and sym_addr >= seg.header.p_vaddr and sym_addr < seg.header.p_vaddr + seg.header.p_memsz:
+                if sym_addr > seg.header.p_vaddr:
+                    yield (
+                        seg.header.p_offset,
+                        seg.header.p_vaddr,
+                        sym_addr - seg.header.p_vaddr,
+                        sym_addr - seg.header.p_vaddr,
+                        seg.header.p_flags)
+                yield (
+                    seg.header.p_offset + sym_addr - seg.header.p_vaddr,
+                    sym_addr,
+                    0x1000,
+                    0x1000,
+                    seg.header.p_flags)
+                
+                if sym_addr + 0x1000 < seg.header.p_vaddr + seg.header.p_memsz:
+                    yield (
+                        seg.header.p_offset + sym_addr + 0x1000 - seg.header.p_vaddr,
+                        sym_addr + 0x1000,
+                        seg.header.p_vaddr + seg.header.p_memsz - (sym_addr + 0x1000),
+                        seg.header.p_vaddr + seg.header.p_memsz - (sym_addr + 0x1000),
+                        seg.header.p_flags)
+            else:
+                yield (
+                    seg.header.p_offset,
+                    seg.header.p_vaddr,
+                    seg.header.p_filesz,
+                    seg.header.p_memsz,
+                    seg.header.p_flags)
 
 
 class MemoryArea:
@@ -165,7 +206,7 @@ class MemoryArea:
         if elf_filename:
             mapaddr = 0xffffffffffffffff
             mapaddr_end = 0
-            for (_, addr_, _, memsize, _) in get_loadcmds(elf_filename):
+            for (_, addr_, _, memsize, _) in get_loadcmds(elf_filename, False):
                 if rounddown(addr_) < mapaddr:
                     mapaddr = rounddown(addr_)
                 if roundup(addr_ + memsize) > mapaddr_end:
@@ -190,7 +231,7 @@ def get_memory_areas(attr, libpal):
     if attr['runtime_enable']:
         areas.append(
             MemoryArea('ussa',
-                    size=attr['max_threads'] * offs.SSA_FRAME_SIZE * offs.SSA_FRAME_NUM,
+                    size=attr['max_threads'] * offs.SSA_FRAME_SIZE,
                     flags=PAGEINFO_R | PAGEINFO_W | PAGEINFO_REG))
     areas.append(MemoryArea('tcs', size=attr['max_threads'] * offs.TCS_SIZE,
                             flags=PAGEINFO_TCS))
@@ -203,9 +244,6 @@ def get_memory_areas(attr, libpal):
     for _ in range(attr['max_threads']):
         areas.append(MemoryArea('sig_stack', size=offs.ENCLAVE_SIG_STACK_SIZE,
                                 flags=PAGEINFO_R | PAGEINFO_W | PAGEINFO_REG))
-
-    if attr['runtime_enable']:
-        areas.append(MemoryArea('handler', size=offs.PAGESIZE, flags=PAGEINFO_HANDLER))
 
     areas.append(MemoryArea('pal', elf_filename=libpal, flags=PAGEINFO_REG))
     return areas
@@ -291,15 +329,15 @@ def gen_area_content(attr, areas, enclave_base, enclave_heap_min):
         set_tls_field(t, offs.SGX_HEAP_MIN, enclave_heap_min)
         set_tls_field(t, offs.SGX_HEAP_MAX, enclave_heap_max)
         if attr['runtime_enable']:
-            ussa = ussa_area.addr + offs.SSA_FRAME_SIZE * offs.SSA_FRAME_NUM * t
+            ussa = ussa_area.addr + offs.SSA_FRAME_SIZE * t
             ussa_offset = ussa - enclave_base
             set_tcs_field(t, offs.TCS_OUSSA, '<Q', ussa_offset)
             set_tls_field(t, offs.SGX_RUNTIME_SIZE, attr['runtime_size'])
             set_tls_field(t, offs.SGX_USSA, ussa)
+            set_tls_field(t, offs.SGX_UGPR, ussa + offs.SSA_FRAME_SIZE - offs.SGX_GPR_SIZE)
 
     tcs_area.content = tcs_data
     tls_area.content = tls_data
-
 
 def populate_memory_areas(attr, areas, enclave_base, enclave_heap_min):
     last_populated_addr = enclave_base + attr['enclave_size'] + attr['runtime_size']
@@ -441,7 +479,12 @@ def generate_measurement(enclave_base, attr, areas, verbose=False):
     for area in areas:
         if area.elf_filename is not None:
             with open(area.elf_filename, 'rb') as file:
-                loadcmds = list(get_loadcmds(area.elf_filename))
+                if attr['runtime_enable']:
+                    loadcmds = list(get_loadcmds(area.elf_filename, True))
+                    sym_addr = get_symaddr(area.elf_filename)
+                else:
+                    loadcmds = list(get_loadcmds(area.elf_filename, False))
+                    sym_addr = 0
                 if loadcmds:
                     mapaddr = 0xffffffffffffffff
                     for (offset, addr, filesize, memsize,
@@ -458,7 +501,12 @@ def generate_measurement(enclave_base, attr, areas, verbose=False):
                     if prot & 1:
                         flags = flags | PAGEINFO_X
 
-                    if flags & PAGEINFO_X:
+                    if addr == sym_addr and filesize == offs.PAGESIZE:
+                        desc = 'handler'
+                        # here can overwrite the type becaues PAGEINFO_HANDLER include the bit of PAGEINFO_REG
+                        flags =  flags | PAGEINFO_HANDLER
+                        assert flags & PAGEINFO_X and flags & PAGEINFO_R and not flags & PAGEINFO_W
+                    elif flags & PAGEINFO_X:
                         desc = 'code'
                     else:
                         desc = 'data'

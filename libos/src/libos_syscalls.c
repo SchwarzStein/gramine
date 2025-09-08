@@ -104,7 +104,13 @@ noreturn void return_from_syscall(PAL_CONTEXT* context) {
     asan_unpoison_region(libos_stack_bottom - LIBOS_THREAD_LIBOS_STACK_SIZE,
                          LIBOS_THREAD_LIBOS_STACK_SIZE);
 #endif
+
+#ifndef RUNTIME
     _return_from_syscall(context);
+#else
+    #include "pal.h"
+    _return_from_syscall(context, PalGetRuntimeEnable());
+#endif
 }
 
 int init_syscalls(void) {

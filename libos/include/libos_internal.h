@@ -58,7 +58,12 @@ noreturn void libos_emulate_syscall(PAL_CONTEXT* context);
 noreturn void return_from_syscall(PAL_CONTEXT* context);
 
 /* Platform-specific part of return_from_syscall (called after ASan unpoisoning). */
+#ifndef RUNTIME
 noreturn void _return_from_syscall(PAL_CONTEXT* context);
+#else
+noreturn void _return_from_syscall(PAL_CONTEXT* context, uint64_t runtime_enable);
+#endif
+
 
 /*!
  * \brief Restore the context after clone/fork.

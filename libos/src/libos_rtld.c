@@ -1095,7 +1095,12 @@ noreturn static void cleanup_and_call_elf_entry(elf_addr_t entry, void* argp) {
                          LIBOS_THREAD_LIBOS_STACK_SIZE);
 
 #endif
+#ifndef RUNTIME
     call_elf_entry(entry, argp);
+#else
+    /* libos cannot check whether runtime is enable, just relocate to pal */
+    PalSwitchToUser(entry, argp);
+#endif
 }
 
 noreturn void execute_elf_object(struct link_map* exec_map, void* argp, elf_auxv_t* auxp) {
@@ -1180,7 +1185,7 @@ noreturn void execute_elf_object(struct link_map* exec_map, void* argp, elf_auxv
     auxp[5].a_un.a_val = random;
 
     elf_addr_t entry = g_interp_map ? g_interp_map->l_entry : g_exec_map->l_entry;
-
+    log_debug("before cleanup_and_call_elf_entry");
     cleanup_and_call_elf_entry(entry, argp);
 }
 

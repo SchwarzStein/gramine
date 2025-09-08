@@ -276,6 +276,18 @@ typedef struct {
 } sgx_arch_exinfo_t;
 static_assert(sizeof(sgx_arch_exinfo_t) == 16, "invalid size");
 
+#ifdef RUNTIME
+typedef struct {
+    union {
+        sgx_arch_exit_info_t exitinfo;
+        uint32_t exitinfo_value;
+    };
+    uint32_t errcd;
+    uint64_t maddr;
+} sgx_arch_eraise_info_t;
+static_assert(sizeof(sgx_arch_eraise_info_t) == 16, "invalid size");
+#endif
+
 #define ERRCD_P   (1U << 0)
 #define ERRCD_W   (1U << 1)
 #define ERRCD_U   (1U << 2)
@@ -428,6 +440,16 @@ static inline int enclu(uint32_t eax, uint64_t rbx, uint64_t rcx, uint64_t rdx) 
 #define EACCEPT     5
 #define EMODPE      6
 #define EACCEPTCOPY 7
+
+#ifdef RUNTIME
+#define ESWITCH    0x100
+#define ERAISE     0x101
+#define ESETUSSA   0x102
+#define EMODP      0x103
+
+#define ESWITCH_FLAG_USER 0x1
+#define ESWITCH_FLAG_SSE_IGNORE 0x2
+#endif
 
 #define SGX_LAUNCH_KEY         0
 #define SGX_PROVISION_KEY      1

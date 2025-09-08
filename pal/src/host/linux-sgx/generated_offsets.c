@@ -55,6 +55,8 @@ const struct generated_offset generated_offsets[] = {
     OFFSET_T(SGX_GPR_RFLAGS, sgx_pal_gpr_t, rflags),
     OFFSET_T(SGX_GPR_RIP, sgx_pal_gpr_t, rip),
     OFFSET_T(SGX_GPR_EXITINFO, sgx_pal_gpr_t, exitinfo),
+    OFFSET_T(SGX_GPR_FSBASE, sgx_pal_gpr_t, fsbase),
+    OFFSET_T(SGX_GPR_GSBASE, sgx_pal_gpr_t, gsbase),
     DEFINE(SGX_GPR_SIZE, sizeof(sgx_pal_gpr_t)),
 
     /* sgx_cpu_context_t */
@@ -95,6 +97,8 @@ const struct generated_offset generated_offsets[] = {
     OFFSET(SGX_SSA, pal_enclave_tcb, ssa),
 #ifdef RUNTIME
     OFFSET(SGX_USSA, pal_enclave_tcb, ussa),
+    OFFSET(SGX_UGPR, pal_enclave_tcb, ugpr),
+    OFFSET(SGX_EVENT_MASK, pal_enclave_tcb, event_mask),
 #endif
     OFFSET(SGX_GPR, pal_enclave_tcb, gpr),
     OFFSET(SGX_EXIT_TARGET, pal_enclave_tcb, exit_target),
@@ -118,6 +122,10 @@ const struct generated_offset generated_offsets[] = {
     OFFSET(PAL_HOST_TCB_EEXIT_CNT, pal_host_tcb, eexit_cnt),
     OFFSET(PAL_HOST_TCB_AEX_CNT, pal_host_tcb, aex_cnt),
     OFFSET(PAL_HOST_TCB_LAST_ASYNC_EVENT, pal_host_tcb, last_async_event),
+#ifdef RUNTIME
+    OFFSET(PAL_HOST_TCB_RUNTIME, pal_host_tcb, runtime_enabled),
+    OFFSET(PAL_HOST_TCB_EVENT_MASK, pal_host_tcb, event_mask),
+#endif
 
     /* sgx_arch_tcs_t */
     OFFSET_T(TCS_FLAGS, sgx_arch_tcs_t, flags),

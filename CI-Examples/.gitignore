@@ -3,4 +3,5 @@
 *.sig
 *.o
 *~
+*test/
 *.swp
