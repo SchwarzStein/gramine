@@ -19,7 +19,8 @@ loader.insecure__use_cmdline_argv = true
 sys.enable_sigterm_injection = true
 
 fs.mounts = [
-  { path = "/lib", uri = "file:{{ gramine.runtimedir() }}" },
+  { path = "/lib/libc.so.6", uri = "file:/lib/x86_64-linux-gnu/libc.so.6" },
+  { path = "/lib/ld-linux-x86-64.so.2", uri = "file:/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2" },
   { path = "{{ arch_libdir }}", uri = "file:{{ arch_libdir }}" },
   { path = "/usr/{{ arch_libdir }}", uri = "file:/usr/{{ arch_libdir }}" },
 {% for path in python.get_sys_path(entrypoint) %}
@@ -35,15 +36,17 @@ sys.stack.size = "2M"
 sys.enable_extra_runtime_domain_names_conf = true
 
 sgx.debug = true
-sgx.edmm_enable = {{ 'true' if env.get('EDMM', '0') == '1' else 'false' }}
-sgx.enclave_size = "1G"
+sgx.edmm_enable = true
+sgx.use_exinfo = true
+sgx.runtime_enable = false
 sgx.max_threads = {{ '1' if env.get('EDMM', '0') == '1' else '32' }}
 
 sgx.remote_attestation = "{{ ra_type }}"
 
 sgx.trusted_files = [
   "file:{{ entrypoint }}",
-  "file:{{ gramine.runtimedir() }}/",
+  "file:/lib/x86_64-linux-gnu/libc.so.6",
+  "file:/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
   "file:{{ arch_libdir }}/",
   "file:/usr/{{ arch_libdir }}/",
 {% for path in python.get_sys_path(entrypoint) %}

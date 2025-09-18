@@ -15,7 +15,7 @@ ifeq ($(SGX),1)
 all: python.manifest.sgx python.sig
 endif
 
-RA_TYPE ?= dcap
+RA_TYPE ?= none
 
 python.manifest: python.manifest.template
 	gramine-manifest \
