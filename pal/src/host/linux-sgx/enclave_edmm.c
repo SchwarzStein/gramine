@@ -84,9 +84,11 @@ int sgx_edmm_add_pages(uint64_t addr, size_t count, uint64_t prot) {
     }
 
 #ifdef RUNTIME
-    if (GET_ENCLAVE_TCB(runtime_size) > 0 && (prot != (SGX_SECINFO_FLAGS_R | SGX_SECINFO_FLAGS_W))) {
-        for (size_t i = 0; i < count; i++) {
-            sgx_emodp(addr + i * PAGE_SIZE, prot);
+    if (GET_ENCLAVE_TCB(runtime_size) > 0 ) {
+        if (prot != (SGX_SECINFO_FLAGS_R | SGX_SECINFO_FLAGS_W)) {
+            for (size_t i = 0; i < count; i++) {
+                sgx_emodp(addr + i * PAGE_SIZE, prot);
+            }
         }
         return 0;
     }
